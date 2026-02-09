@@ -34,8 +34,17 @@ class ProjectCommands:
             os.makedirs(os.path.dirname(project_path), exist_ok=True)
 
             # Create a new board
+            logger.info(f"Creating new board for project: {project_name}")
             board = pcbnew.BOARD()
-            
+
+            if board is None:
+                logger.error("pcbnew.BOARD() returned None")
+                return {
+                    "success": False,
+                    "message": "Failed to create board - pcbnew.BOARD() returned None",
+                    "errorDetails": f"pcbnew version: {pcbnew.GetBuildVersion()}"
+                }
+
             # Set project properties
             board.GetTitleBlock().SetTitle(project_name)
             
@@ -92,6 +101,7 @@ class ProjectCommands:
                 f.write('}\n')
 
             self.board = board
+            logger.info(f"Board created and stored. self.board is None: {self.board is None}")
 
             return {
                 "success": True,
@@ -133,8 +143,36 @@ class ProjectCommands:
                 board_path = filename
 
             # Load the board
+            logger.info(f"Loading board from: {board_path}")
             board = pcbnew.LoadBoard(board_path)
+
+            # Validate that LoadBoard actually returned a valid board object
+            if board is None:
+                logger.error(f"pcbnew.LoadBoard() returned None for: {board_path}")
+                return {
+                    "success": False,
+                    "message": "Failed to load board - pcbnew.LoadBoard() returned None",
+                    "errorDetails": (
+                        f"The board file may be incompatible with this version of pcbnew. "
+                        f"File: {board_path}. "
+                        f"pcbnew version: {pcbnew.GetBuildVersion()}"
+                    )
+                }
+
+            # Additional validation: try to access the board to verify it's usable
+            try:
+                _ = board.GetFileName()
+                logger.info(f"Board loaded and validated successfully: {board.GetFileName()}")
+            except Exception as validation_err:
+                logger.error(f"Board object is invalid after LoadBoard: {validation_err}")
+                return {
+                    "success": False,
+                    "message": "Board loaded but object is invalid",
+                    "errorDetails": str(validation_err)
+                }
+
             self.board = board
+            logger.info(f"Board reference stored. self.board is None: {self.board is None}")
 
             return {
                 "success": True,

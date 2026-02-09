@@ -88,12 +88,22 @@ function findPythonExecutable(scriptPath: string, includeVirtualEnv = true): str
     ];
 
     // Check all KiCAD app locations with all Python versions
+    // Try multiple binary locations within each Python.framework version
     for (const appPath of kicadAppPaths) {
       for (const version of kicadPythonVersions) {
-        const kicadPython = `${appPath}/Contents/Frameworks/Python.framework/Versions/${version}/bin/python3`;
-        if (existsSync(kicadPython)) {
-          logger.info(`Found KiCAD bundled Python at: ${kicadPython}`);
-          return kicadPython;
+        const frameworkBase = `${appPath}/Contents/Frameworks/Python.framework/Versions/${version}`;
+        const candidatePaths = [
+          `${frameworkBase}/bin/python3`,
+          `${frameworkBase}/bin/python${version}`,
+          `${frameworkBase}/bin/python3.${version.split('.')[1]}`,
+          `${frameworkBase}/Resources/Python.app/Contents/MacOS/Python`,
+        ];
+
+        for (const candidatePath of candidatePaths) {
+          if (existsSync(candidatePath)) {
+            logger.info(`Found KiCAD bundled Python at: ${candidatePath}`);
+            return candidatePath;
+          }
         }
       }
     }
@@ -442,12 +452,65 @@ export class KiCADMcpServer {
       if (!await this.validatePrerequisites(pythonExe)) {
         throw new Error('Prerequisites validation failed. See logs above for details.');
       }
+      // Build platform-specific environment for Python process
+      const spawnEnv: Record<string, string | undefined> = { ...process.env };
+      const isMacSpawn = process.platform === 'darwin';
+      const isWindowsSpawn = process.platform === 'win32';
+
+      if (isMacSpawn) {
+        // macOS: Detect KiCAD Frameworks path for wxWidgets and other bundled libs
+        const kicadAppPaths = [
+          '/Applications/KiCad/KiCad.app',
+          '/Applications/KiCAD/KiCad.app',
+          `${process.env.HOME}/Applications/KiCad/KiCad.app`,
+        ];
+        let kicadFrameworksPath = '';
+        for (const appPath of kicadAppPaths) {
+          const fwPath = `${appPath}/Contents/Frameworks`;
+          if (existsSync(fwPath)) {
+            kicadFrameworksPath = fwPath;
+            break;
+          }
+        }
+
+        if (kicadFrameworksPath) {
+          // Set DYLD paths so _pcbnew.so can find wxWidgets and other KiCAD libs
+          const existingDyldFw = process.env.DYLD_FRAMEWORK_PATH || '';
+          const existingDyldLib = process.env.DYLD_LIBRARY_PATH || '';
+          spawnEnv.DYLD_FRAMEWORK_PATH = existingDyldFw
+            ? `${kicadFrameworksPath}:${existingDyldFw}`
+            : kicadFrameworksPath;
+          spawnEnv.DYLD_LIBRARY_PATH = existingDyldLib
+            ? `${kicadFrameworksPath}:${existingDyldLib}`
+            : kicadFrameworksPath;
+
+          // Auto-detect PYTHONPATH for KiCAD site-packages if not already set
+          if (!process.env.PYTHONPATH) {
+            const pyVersions = ['3.9', '3.10', '3.11', '3.12', '3.13'];
+            for (const ver of pyVersions) {
+              const sitePackages = `${kicadFrameworksPath}/Python.framework/Versions/${ver}/lib/python${ver}/site-packages`;
+              if (existsSync(sitePackages)) {
+                spawnEnv.PYTHONPATH = sitePackages;
+                logger.info(`Auto-detected PYTHONPATH for macOS: ${sitePackages}`);
+                break;
+              }
+            }
+          }
+
+          logger.info(`macOS: DYLD_FRAMEWORK_PATH set to: ${spawnEnv.DYLD_FRAMEWORK_PATH}`);
+        } else {
+          logger.warn('macOS: Could not find KiCAD Frameworks path');
+        }
+      } else if (isWindowsSpawn) {
+        // Windows: Set PYTHONPATH if not already set
+        if (!process.env.PYTHONPATH) {
+          spawnEnv.PYTHONPATH = 'C:/Program Files/KiCad/9.0/lib/python3/dist-packages';
+        }
+      }
+
       this.pythonProcess = spawn(pythonExe, [this.kicadScriptPath], {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PYTHONPATH: process.env.PYTHONPATH || 'C:/Program Files/KiCad/9.0/lib/python3/dist-packages'
-        }
+        env: spawnEnv
       });
       
       // Listen for process exit
