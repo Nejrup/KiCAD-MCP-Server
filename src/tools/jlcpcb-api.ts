@@ -7,46 +7,362 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
 export function registerJLCPCBApiTools(server: McpServer, callKicadScript: Function) {
+  const fmtRange = (r: any) => `${r?.min?.toLocaleString?.() ?? r?.min} - ${r?.max?.toLocaleString?.() ?? r?.max}`;
+  const fmtTimeRange = (t: any) => {
+    const min = t?.min;
+    const max = t?.max;
+    if (typeof min === 'number' && typeof max === 'number') {
+      return `${min} - ${max} min`;
+    }
+    return 'unknown';
+  };
+
+  const elicitChoice = async (message: string, enumValues: string[], enumNames: string[]) => {
+    return await server.server.elicitInput({
+      message,
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          choice: {
+            type: 'string',
+            enum: enumValues,
+            enumNames,
+            title: 'Choice',
+            description: 'Select one option',
+          },
+        },
+        required: ['choice'],
+      },
+    });
+  };
+
   // Download JLCPCB parts database
   server.tool(
     "download_jlcpcb_database",
     `Download the complete JLCPCB parts catalog to local database.
 
 This is a one-time setup that downloads JLCPCB parts into a local SQLite database.
-Use source='official' for full-catalog download (requires JLCPCB_APP_ID, JLCPCB_API_KEY, JLCPCB_API_SECRET).
-Use source='jlcsearch' as public fallback when official credentials are unavailable.
+Use source='official' for signed full-catalog download (requires JLCPCB_APP_ID, JLCPCB_API_KEY, JLCPCB_API_SECRET).
+Use source='public' for high-coverage public snapshot hosted by yaqwsx/jlcparts artifacts.
 
 The download takes 5-10 minutes and creates a local SQLite database
 for fast offline searching.`,
     {
       force: z.boolean().optional().default(false)
         .describe("Force re-download even if database exists"),
-      source: z.enum(["auto", "official", "jlcsearch"]).optional().default("auto")
-        .describe("Download source: auto-detect, official JLCPCB API, or JLCSearch fallback")
+      source: z.enum(["auto", "official", "public"]).optional().default("auto")
+        .describe("Download source: auto (show choices), signed official API, or public snapshot (hosted by yaqwsx)"),
+      confirm: z.boolean().optional().default(false)
+        .describe("Required for public snapshot source after estimate is shown")
     },
-    async (args: { force?: boolean; source?: "auto" | "official" | "jlcsearch" }) => {
-      const result = await callKicadScript("download_jlcpcb_database", args);
-      if (result.success) {
-        const warningLine = result.warning ? `\nWarning: ${result.warning}` : '';
+    async (args: { force?: boolean; source?: "auto" | "official" | "public"; confirm?: boolean }) => {
+      let startResult = await callKicadScript("download_jlcpcb_database", {
+        ...args,
+        background: true,
+      });
+
+      if (!startResult.success) {
+        if (startResult.requiresReplaceConfirmation && startResult.stats) {
+          const stats = startResult.stats;
+          const official = startResult.options?.official;
+          const publicSnapshot = startResult.options?.public;
+
+          const sourceInfo = official && publicSnapshot
+            ? `\n\nAvailable sources after replacement:\n` +
+              `1) official - available=${official.available ? 'yes' : 'no'}, est parts=${fmtRange(official.estimatedPartCount)}, est in-stock~${(official.estimatedInStockParts ?? '?').toLocaleString?.() ?? official.estimatedInStockParts ?? '?'}, est basic~${(official.estimatedBasicParts ?? '?').toLocaleString?.() ?? official.estimatedBasicParts ?? '?'}, est download=${official.estimatedDownloadSizeMB ?? '?'} MB, est DB=${official.estimatedDatabaseSizeMB} MB, est time=${fmtTimeRange(official.estimatedDownloadTimeMinutes)}\n` +
+              `   Note: ${official.recommendedUseCase || 'Signed official API dataset.'}\n` +
+              `2) public (hosted by yaqwsx) - est parts=${fmtRange(publicSnapshot.estimatedPartCount)}, est in-stock~${(publicSnapshot.estimatedInStockParts ?? '?').toLocaleString?.() ?? publicSnapshot.estimatedInStockParts ?? '?'}, est basic~${(publicSnapshot.estimatedBasicParts ?? '?').toLocaleString?.() ?? publicSnapshot.estimatedBasicParts ?? '?'}, est changed download=${publicSnapshot.estimatedUpdateDownloadMB ?? publicSnapshot.downloadSizeMB} MB, est DB=${publicSnapshot.estimatedDatabaseSizeMB} MB, est time=${fmtTimeRange(publicSnapshot.estimatedUpdateTimeMinutes || publicSnapshot.estimatedDownloadTimeMinutes)}\n` +
+              `   Archive reuse: changed=${publicSnapshot.changedArchiveParts ?? '?'} reused=${publicSnapshot.reusedArchiveParts ?? '?'}\n` +
+              `   Note: ${publicSnapshot.recommendedUseCase || 'Large public snapshot.'}`
+            : '';
+
+          try {
+            const response = await elicitChoice(
+              `Existing JLC database found:\n` +
+                `Total parts: ${stats.total_parts}\n` +
+                `Basic: ${stats.basic_parts}, Extended: ${stats.extended_parts}\n` +
+                `In stock: ${stats.in_stock}\n` +
+                `Path: ${stats.db_path}` +
+                sourceInfo,
+              ['keep_existing', 'replace_official', 'replace_public'],
+              ['Keep existing database', 'Replace with Official API', 'Replace with Public Snapshot'],
+            );
+
+            const choice = response?.content?.choice;
+            if (response?.action !== 'accept' || !choice || choice === 'keep_existing') {
+              return {
+                content: [{
+                  type: 'text',
+                  text: 'Keeping existing JLC database. No download started.',
+                }],
+              };
+            }
+
+            const nextArgs = choice === 'replace_official'
+              ? { force: true, source: 'official' }
+              : { force: true, source: 'public', confirm: true };
+
+            startResult = await callKicadScript('download_jlcpcb_database', {
+              ...nextArgs,
+              background: true,
+            });
+            if (!startResult.success) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `✗ Failed to start JLCPCB download: ${startResult.message || 'Unknown error'}`,
+                }],
+              };
+            }
+          } catch {
+            return {
+              content: [{
+                type: 'text',
+                text: `⚠ Existing JLC database found:\n` +
+                  `Total parts: ${stats.total_parts}\n` +
+                  `Basic: ${stats.basic_parts}, Extended: ${stats.extended_parts}\n` +
+                  `In stock: ${stats.in_stock}\n` +
+                  `Path: ${stats.db_path}\n\n` +
+                  `Choose:\n` +
+                  `- Keep existing DB: do nothing\n` +
+                  `- Replace DB: re-run with force=true source=official OR force=true source=public` +
+                  sourceInfo,
+              }],
+            };
+          }
+        }
+
+        if (startResult.requiresDownloadConfirmation && startResult.estimate) {
+          const est = startResult.estimate;
+          const partRange = est.estimatedPartCount;
+          try {
+            const response = await elicitChoice(
+                `Public snapshot download confirmation required\n` +
+                `Estimated parts: ${partRange.min.toLocaleString()} - ${partRange.max.toLocaleString()}\n` +
+                `Estimated in-stock parts: ~${(est.estimatedInStockParts ?? '?').toLocaleString?.() ?? est.estimatedInStockParts ?? '?'}\n` +
+                `Estimated basic parts: ~${(est.estimatedBasicParts ?? '?').toLocaleString?.() ?? est.estimatedBasicParts ?? '?'}\n` +
+                `Estimated changed download: ${est.estimatedUpdateDownloadMB ?? est.downloadSizeMB} MB\n` +
+                `Estimated local DB size: ~${est.estimatedDatabaseSizeMB} MB\n` +
+                `Estimated download time: ${fmtTimeRange(est.estimatedUpdateTimeMinutes || est.estimatedDownloadTimeMinutes)}\n` +
+                `Archive reuse: changed=${est.changedArchiveParts ?? '?'} reused=${est.reusedArchiveParts ?? '?'}\n` +
+                `Snapshot time: ${est.createdAt || 'unknown'}\n` +
+                `Use case: ${est.recommendedUseCase || 'Broad public catalog snapshot.'}`,
+              ['proceed', 'cancel'],
+              ['Proceed with public snapshot', 'Cancel'],
+            );
+
+            const choice = response?.content?.choice;
+            if (response?.action !== 'accept' || choice !== 'proceed') {
+              return { content: [{ type: 'text', text: 'Public snapshot download cancelled.' }] };
+            }
+
+            startResult = await callKicadScript('download_jlcpcb_database', {
+              force: Boolean(args.force),
+              source: 'public',
+              confirm: true,
+              background: true,
+            });
+            if (!startResult.success) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `✗ Failed to start JLCPCB download: ${startResult.message || 'Unknown error'}`,
+                }],
+              };
+            }
+          } catch {
+            return {
+              content: [{
+                type: 'text',
+                text: `⚠ public snapshot download confirmation required\n` +
+                  `Estimated parts: ${partRange.min.toLocaleString()} - ${partRange.max.toLocaleString()}\n` +
+                  `Estimated in-stock parts: ~${(est.estimatedInStockParts ?? '?').toLocaleString?.() ?? est.estimatedInStockParts ?? '?'}\n` +
+                  `Estimated basic parts: ~${(est.estimatedBasicParts ?? '?').toLocaleString?.() ?? est.estimatedBasicParts ?? '?'}\n` +
+                  `Estimated changed download: ${est.estimatedUpdateDownloadMB ?? est.downloadSizeMB} MB\n` +
+                  `Estimated local DB size: ~${est.estimatedDatabaseSizeMB} MB\n` +
+                  `Estimated download time: ${fmtTimeRange(est.estimatedUpdateTimeMinutes || est.estimatedDownloadTimeMinutes)}\n` +
+                  `Archive reuse: changed=${est.changedArchiveParts ?? '?'} reused=${est.reusedArchiveParts ?? '?'}\n` +
+                  `Snapshot time: ${est.createdAt || 'unknown'}\n` +
+                  `Use case: ${est.recommendedUseCase || 'Broad public catalog snapshot.'}\n` +
+                  `Re-run with confirm=true to proceed.`,
+              }],
+            };
+          }
+        }
+
+        if (startResult.requiresSourceSelection && startResult.options) {
+          const official = startResult.options.official;
+          const publicSnapshot = startResult.options.public;
+          try {
+            const response = await elicitChoice(
+              `Select JLC download source:\n` +
+                `1) official - available=${official.available ? 'yes' : 'no'}, est parts=${fmtRange(official.estimatedPartCount)}, est in-stock~${(official.estimatedInStockParts ?? '?').toLocaleString?.() ?? official.estimatedInStockParts ?? '?'}, est basic~${(official.estimatedBasicParts ?? '?').toLocaleString?.() ?? official.estimatedBasicParts ?? '?'}, est download=${official.estimatedDownloadSizeMB ?? '?'} MB, est DB=${official.estimatedDatabaseSizeMB} MB, est time=${fmtTimeRange(official.estimatedDownloadTimeMinutes)}\n` +
+                `   Note: ${official.recommendedUseCase || 'Signed official API dataset.'}\n` +
+                `2) public (hosted by yaqwsx) - est parts=${fmtRange(publicSnapshot.estimatedPartCount)}, est in-stock~${(publicSnapshot.estimatedInStockParts ?? '?').toLocaleString?.() ?? publicSnapshot.estimatedInStockParts ?? '?'}, est basic~${(publicSnapshot.estimatedBasicParts ?? '?').toLocaleString?.() ?? publicSnapshot.estimatedBasicParts ?? '?'}, est changed download=${publicSnapshot.estimatedUpdateDownloadMB ?? publicSnapshot.downloadSizeMB} MB, est DB=${publicSnapshot.estimatedDatabaseSizeMB} MB, est time=${fmtTimeRange(publicSnapshot.estimatedUpdateTimeMinutes || publicSnapshot.estimatedDownloadTimeMinutes)}\n` +
+                `   Archive reuse: changed=${publicSnapshot.changedArchiveParts ?? '?'} reused=${publicSnapshot.reusedArchiveParts ?? '?'}\n` +
+                `   Note: ${publicSnapshot.recommendedUseCase || 'Large public snapshot.'}`,
+              ['official', 'public'],
+              ['Official API', 'Public snapshot (hosted by yaqwsx)'],
+            );
+
+            const choice = response?.content?.choice;
+            if (response?.action !== 'accept' || !choice) {
+              return { content: [{ type: 'text', text: 'Download cancelled.' }] };
+            }
+
+            const nextArgs = choice === 'official'
+              ? { force: Boolean(args.force), source: 'official' }
+              : { force: Boolean(args.force), source: 'public', confirm: true };
+
+            startResult = await callKicadScript('download_jlcpcb_database', {
+              ...nextArgs,
+              background: true,
+            });
+            if (!startResult.success) {
+              return {
+                content: [{
+                  type: 'text',
+                  text: `✗ Failed to start JLCPCB download: ${startResult.message || 'Unknown error'}`,
+                }],
+              };
+            }
+          } catch {
+            return {
+              content: [{
+                type: "text",
+                text: `Select JLC download source:\n` +
+                  `1) official - available=${official.available ? 'yes' : 'no'}, est parts=${fmtRange(official.estimatedPartCount)}, est in-stock~${(official.estimatedInStockParts ?? '?').toLocaleString?.() ?? official.estimatedInStockParts ?? '?'}, est basic~${(official.estimatedBasicParts ?? '?').toLocaleString?.() ?? official.estimatedBasicParts ?? '?'}, est download=${official.estimatedDownloadSizeMB ?? '?'} MB, est DB=${official.estimatedDatabaseSizeMB} MB, est time=${fmtTimeRange(official.estimatedDownloadTimeMinutes)}\n` +
+                  `   Note: ${official.recommendedUseCase || 'Signed official API dataset.'}\n` +
+                  `2) public (hosted by yaqwsx) - est parts=${fmtRange(publicSnapshot.estimatedPartCount)}, est in-stock~${(publicSnapshot.estimatedInStockParts ?? '?').toLocaleString?.() ?? publicSnapshot.estimatedInStockParts ?? '?'}, est basic~${(publicSnapshot.estimatedBasicParts ?? '?').toLocaleString?.() ?? publicSnapshot.estimatedBasicParts ?? '?'}, est changed download=${publicSnapshot.estimatedUpdateDownloadMB ?? publicSnapshot.downloadSizeMB} MB, est DB=${publicSnapshot.estimatedDatabaseSizeMB} MB, est time=${fmtTimeRange(publicSnapshot.estimatedUpdateTimeMinutes || publicSnapshot.estimatedDownloadTimeMinutes)}\n` +
+                  `   Archive reuse: changed=${publicSnapshot.changedArchiveParts ?? '?'} reused=${publicSnapshot.reusedArchiveParts ?? '?'}\n` +
+                  `   Note: ${publicSnapshot.recommendedUseCase || 'Large public snapshot.'}\n` +
+                  `Re-run with source=official or source=public.`,
+              }],
+            };
+          }
+        }
+
         return {
           content: [{
             type: "text",
-            text: `✓ Successfully downloaded JLCPCB parts database\n\n` +
-                  `Source: ${result.source || 'unknown'}\n` +
-                  `Total parts: ${result.total_parts}\n` +
-                  `Basic parts: ${result.basic_parts}\n` +
-                  `Extended parts: ${result.extended_parts}\n` +
-                  `Database size: ${result.db_size_mb} MB\n` +
-                  `Database path: ${result.db_path}` +
-                  warningLine
+            text: `✗ Failed to start JLCPCB download: ${startResult.message || 'Unknown error'}\n\n` +
+              `For official source, provide credentials via ~/.kicad-mcp/config.json (jlcpcb.appId/apiKey/apiSecret) or env vars JLCPCB_APP_ID/JLCPCB_API_KEY/JLCPCB_API_SECRET.`
           }]
         };
       }
+
       return {
         content: [{
           type: "text",
-          text: `✗ Failed to download JLCPCB database: ${result.message || 'Unknown error'}\n\n` +
-                `For official source, set JLCPCB_APP_ID, JLCPCB_API_KEY, and JLCPCB_API_SECRET.`
+          text: `✓ JLCPCB database download started in background (source=${startResult.source || args.source || 'auto'}). ` +
+            `Run get_jlcpcb_download_status for progress and final result.`
+        }]
+      };
+      }
+  );
+
+  server.tool(
+    "get_jlcpcb_download_status",
+    "Get current progress for an in-flight JLCPCB database download/import operation",
+    {},
+    async () => {
+      const result = await callKicadScript("get_jlcpcb_download_status", {});
+      if (!result.success) {
+        return {
+          content: [{
+            type: "text",
+            text: `Failed to get download status: ${result.message || 'Unknown error'}`
+          }]
+        };
+      }
+
+      const latestStatus = result.status;
+
+      if (latestStatus?.stage === 'completed') {
+        const success = latestStatus.lastSuccess || {};
+        const updatedArchiveParts = latestStatus.updatedArchiveParts ?? success.updatedArchiveParts;
+        const reusedArchiveParts = latestStatus.reusedArchiveParts ?? success.reusedArchiveParts;
+        const downloadedNow =
+          latestStatus.downloadedSizeMB ??
+          latestStatus.totalSizeMB ??
+          latestStatus.estimate?.downloadSizeMB ??
+          latestStatus.estimate?.estimatedUpdateDownloadMB ??
+          '?';
+        const downloadedTotal =
+          latestStatus.totalSizeMB ??
+          latestStatus.estimate?.downloadSizeMB ??
+          latestStatus.estimate?.estimatedUpdateDownloadMB ??
+          '?';
+        const importedNow = success.totalParts ?? latestStatus.totalParts ?? latestStatus.importedParts ?? '?';
+        const importedTotal = success.totalParts ?? latestStatus.totalParts ?? '?';
+        const elapsed = typeof latestStatus.elapsedSeconds === 'number' ? `${latestStatus.elapsedSeconds.toFixed(1)}s` : 'n/a';
+        const archiveUpdateInfo =
+          typeof updatedArchiveParts === 'number' || typeof reusedArchiveParts === 'number'
+            ? ` | archive_changed=${updatedArchiveParts ?? '?'} | archive_reused=${reusedArchiveParts ?? '?'}`
+            : '';
+        return {
+          content: [{
+            type: "text",
+            text: `completed | source=${latestStatus.source || success.source || 'unknown'} | downloaded=${downloadedNow}/${downloadedTotal} MB | imported=${importedNow}/${importedTotal} parts${archiveUpdateInfo} | evt=${latestStatus.message || 'done'} | elapsed=${elapsed}`
+          }]
+        };
+      }
+
+      if (latestStatus?.stage === 'failed') {
+        return {
+          content: [{
+            type: "text",
+            text: `✗ JLCPCB database download failed: ${latestStatus.error || latestStatus.message || 'Unknown error'}`
+          }]
+        };
+      }
+
+      if (latestStatus?.stage === 'awaiting_source_selection') {
+        return {
+          content: [{
+            type: "text",
+            text: "Download is awaiting source selection. Re-run download_jlcpcb_database with source=official or source=public."
+          }]
+        };
+      }
+
+      if (latestStatus) {
+        const stage = latestStatus.stage || 'unknown';
+        const elapsed = typeof latestStatus.elapsedSeconds === 'number' ? `${latestStatus.elapsedSeconds.toFixed(1)}s` : 'n/a';
+        const downloadedMb = latestStatus.downloadedSizeMB;
+        const downloaded = typeof downloadedMb === 'number'
+          ? downloadedMb
+          : Number(latestStatus.downloadedParts || 0);
+        const fullDownloadMb =
+          latestStatus.totalSizeMB ??
+          latestStatus.estimate?.downloadSizeMB ??
+          latestStatus.estimate?.estimatedUpdateDownloadMB ??
+          '?';
+        const imported = Number(latestStatus.importedParts || 0).toLocaleString();
+        const importedTotal =
+          latestStatus.totalParts ??
+          latestStatus.estimate?.expectedTotalParts ??
+          latestStatus.lastSuccess?.totalParts ??
+          latestStatus.estimate?.estimatedPartCount?.max ??
+          '?';
+        const evtDetails = latestStatus.message || 'none';
+        const archiveUpdateInfo =
+          (typeof latestStatus.updatedArchiveParts === 'number' || typeof latestStatus.reusedArchiveParts === 'number')
+            ? ` | archive_changed=${latestStatus.updatedArchiveParts ?? '?'} | archive_reused=${latestStatus.reusedArchiveParts ?? '?'}`
+            : '';
+
+        return {
+          content: [{
+            type: "text",
+            text: `${stage} | source=${latestStatus.source || 'n/a'} | downloaded=${Number(downloaded).toLocaleString()}/${fullDownloadMb} MB | imported=${imported}/${importedTotal} parts${archiveUpdateInfo} | evt=${evtDetails} | elapsed=${elapsed}`
+          }]
+        };
+      }
+
+      return {
+        content: [{
+          type: "text",
+          text: "No download status available"
         }]
       };
     }

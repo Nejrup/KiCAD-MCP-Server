@@ -11,7 +11,7 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
 - 64 fully-documented tools with JSON Schema validation
 - Smart tool discovery with router pattern (reduces AI context by 70%)
 - 8 dynamic resources exposing project state
-- JLCPCB parts integration with 100k+ component catalog and local library search
+- JLCPCB parts integration with ~7,000,000 component public snapshot catalog and local library search
 - Full MCP 2025-06-18 protocol compliance
 - Cross-platform support (Linux, Windows, macOS)
 - Real-time KiCAD UI integration via IPC API (experimental)
@@ -129,7 +129,7 @@ Complete integration with JLCPCB's parts catalog, providing two complementary ap
 
 **Dual-Mode Architecture:**
 1. **Local Symbol Libraries** - Search JLCPCB libraries installed via KiCAD Plugin and Content Manager (contributed by [@l3wi](https://github.com/l3wi))
-2. **JLCPCB API Integration** - Access the complete 100k+ parts catalog with real-time pricing and stock data
+2. **JLCPCB API Integration** - Access the complete ~7,000,000 parts public snapshot with pricing/stock data and local filtering
 
 **Key Features:**
 - Real-time pricing with quantity breaks (1+, 10+, 100+, 1000+)
@@ -221,7 +221,7 @@ The server provides 64 tools organized into functional categories. With the new 
 
 ### JLCPCB Integration (5 tools)
 - `download_jlcpcb_database` - Download complete JLCPCB parts catalog (one-time setup)
-- `search_jlcpcb_parts` - Search 100k+ parts with parametric filters
+- `search_jlcpcb_parts` - Search ~7,000,000 parts with parametric filters
 - `get_jlcpcb_part` - Get detailed part info with pricing and footprints
 - `get_jlcpcb_database_stats` - View database statistics and coverage
 - `suggest_jlcpcb_alternatives` - Find cheaper or more available alternatives
@@ -475,21 +475,28 @@ For access to the full 100k+ parts catalog with pricing:
    - Navigate to Account > API Management
    - Create API credentials and save your `appId`, `appKey`, and `appSecret`
 
-2. **Configure Environment Variables**
+2. **Configure Credentials in MCP Config (Recommended)**
 
-   Add to your shell profile (`~/.bashrc`, `~/.zshrc`, or `~/.profile`):
-   ```bash
-   export JLCPCB_APP_ID="your_app_id_here"
-   export JLCPCB_API_KEY="your_app_key_here"
-   export JLCPCB_API_SECRET="your_app_secret_here"
+   The server uses its existing JSON config loader and can read a user config at:
+   - macOS/Linux: `~/.kicad-mcp/config.json`
+   - Windows: `%USERPROFILE%\\.kicad-mcp\\config.json`
+
+   Add a `jlcpcb` section:
+   ```json
+   {
+     "logLevel": "info",
+     "jlcpcb": {
+       "appId": "your_app_id_here",
+       "apiKey": "your_app_key_here",
+       "apiSecret": "your_app_secret_here"
+     }
+   }
    ```
 
-   Or create a `.env` file in the project root:
-   ```
-   JLCPCB_APP_ID=your_app_id_here
-   JLCPCB_API_KEY=your_app_key_here
-   JLCPCB_API_SECRET=your_app_secret_here
-   ```
+   Notes:
+   - CLI flag `--config <path>` overrides the default config lookup.
+   - Environment variables still work and take precedence when set.
+   - Keep this file private; do not commit real credentials.
 
 3. **Download Parts Database (One-time setup, takes 5-10 minutes)**
    ```

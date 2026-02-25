@@ -3,7 +3,7 @@
 The KiCAD MCP Server provides **two complementary approaches** for working with JLCPCB parts:
 
 1. **Local Symbol Libraries** - Search JLCPCB libraries installed via KiCad PCM _(contributed by [@l3wi](https://github.com/l3wi) in [PR #25](https://github.com/mixelpixx/KiCAD-MCP-Server/pull/25))_
-2. **JLCPCB API Integration** - Access the complete 100k+ parts catalog with real-time pricing
+2. **JLCPCB API Integration** - Access the complete ~7,000,000 parts catalog snapshot with real-time pricing
 
 Both approaches can be used together to give you maximum flexibility.
 
@@ -97,7 +97,7 @@ Class: Extended
 ## Approach 2: JLCPCB API Integration (For Complete Catalog Access)
 
 ### What It Does
-- Downloads the **complete JLCPCB parts catalog** (~100k+ parts)
+- Downloads the **complete JLCPCB parts catalog snapshot** (~7,000,000 parts)
 - Provides **real-time pricing and stock information**
 - Automatic **Basic vs Extended** library type identification (Basic = free assembly)
 - Smart suggestions for cheaper/in-stock alternatives
@@ -137,16 +137,17 @@ JLCPCB_API_SECRET=your_app_secret_here
 download_jlcpcb_database({ force: false })
 ```
 
-This downloads ~100k parts from JLCPCB and creates a local SQLite database (`data/jlcpcb_parts.db`).
+This downloads and indexes the public snapshot from yaqwsx/jlcparts and creates a local SQLite database (`data/jlcpcb_parts.db`).
 
 **Output:**
 ```
 ✓ Successfully downloaded JLCPCB parts database
 
-Total parts: 108,523
-Basic parts: 2,856 (free assembly)
-Extended parts: 105,667 ($3 setup fee each)
-Database size: 42.3 MB
+Total parts: ~7,000,000
+Basic parts: ~350 (free assembly)
+Extended parts: ~6,999,650
+In stock: ~650,000
+Database size: ~1,700 MB
 Database path: /home/user/KiCAD-MCP-Server/data/jlcpcb_parts.db
 ```
 
@@ -258,7 +259,7 @@ Database path: /home/user/KiCAD-MCP-Server/data/jlcpcb_parts.db
 ```
 
 ### Advantages
-- ✅ Complete JLCPCB catalog (100k+ parts)
+- ✅ Complete JLCPCB catalog snapshot (~7,000,000 parts)
 - ✅ Real-time pricing and stock data
 - ✅ Automatic Basic/Extended identification
 - ✅ Cost optimization suggestions
@@ -412,7 +413,7 @@ download_jlcpcb_database({ force: false })
 
 | Feature | Local Libraries | JLCPCB API |
 |---------|----------------|------------|
-| **Parts Count** | 1k-10k (installed) | 100k+ (complete catalog) |
+| **Parts Count** | 1k-10k (installed) | ~7,000,000 (complete snapshot) |
 | **Setup** | Install via PCM | API credentials + download |
 | **Offline Use** | ✅ Yes | ✅ Yes (after download) |
 | **Pricing** | ❌ No | ✅ Real-time |
