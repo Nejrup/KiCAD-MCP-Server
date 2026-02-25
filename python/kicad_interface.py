@@ -12,6 +12,9 @@ import json
 import traceback
 import logging
 import os
+import time
+import threading
+import shutil
 from typing import Dict, Any, Optional
 
 # Import tool schemas and resource definitions
@@ -268,7 +271,6 @@ class KiCADInterface:
         self.component_commands = ComponentCommands(self.board, self.footprint_library)
         self.routing_commands = RoutingCommands(self.board)
         self.design_rule_commands = DesignRuleCommands(self.board)
-        self.export_commands = ExportCommands(self.board)
         self.library_commands = LibraryCommands(self.footprint_library)
 
         # Initialize symbol library manager (for searching local KiCad symbol libraries)
@@ -276,10 +278,25 @@ class KiCADInterface:
 
         # Initialize JLCPCB API integration
         self.jlcpcb_client = JLCPCBClient()  # Official API (requires auth)
-        from commands.jlcsearch import JLCSearchClient
 
-        self.jlcsearch_client = JLCSearchClient()  # Public API (no auth required)
         self.jlcpcb_parts = JLCPCBPartsManager()
+        self.jlcpcb_download_status = {
+            "isRunning": False,
+            "stage": "idle",
+            "source": None,
+            "message": "No download in progress",
+            "startedAt": None,
+            "elapsedSeconds": 0,
+            "downloadedParts": 0,
+            "importedParts": 0,
+            "totalParts": None,
+            "lastUpdated": None,
+            "error": None,
+            "lastSuccess": None,
+        }
+        self.jlcpcb_download_thread = None
+        self.jlcpcb_download_last_result = None
+        self.export_commands = ExportCommands(self.board, self.jlcpcb_parts)
 
         # Schematic-related classes don't need board reference
         # as they operate directly on schematic files
@@ -314,6 +331,8 @@ class KiCADInterface:
             "find_component": self.component_commands.find_component,
             "get_component_pads": self.component_commands.get_component_pads,
             "get_pad_position": self.component_commands.get_pad_position,
+            "set_pad_net": self.component_commands.set_pad_net,
+            "get_component_connections": self.component_commands.get_component_connections,
             "place_component_array": self.component_commands.place_component_array,
             "align_components": self.component_commands.align_components,
             "duplicate_component": self.component_commands.duplicate_component,
@@ -324,6 +343,7 @@ class KiCADInterface:
             "delete_trace": self.routing_commands.delete_trace,
             "query_traces": self.routing_commands.query_traces,
             "modify_trace": self.routing_commands.modify_trace,
+            "analyze_nets": self.routing_commands.analyze_nets,
             "copy_routing_pattern": self.routing_commands.copy_routing_pattern,
             "get_nets_list": self.routing_commands.get_nets_list,
             "create_netclass": self.routing_commands.create_netclass,
@@ -335,12 +355,14 @@ class KiCADInterface:
             "get_design_rules": self.design_rule_commands.get_design_rules,
             "run_drc": self.design_rule_commands.run_drc,
             "get_drc_violations": self.design_rule_commands.get_drc_violations,
+            "get_drc_history": self.design_rule_commands.get_drc_history,
             # Export commands
             "export_gerber": self.export_commands.export_gerber,
             "export_pdf": self.export_commands.export_pdf,
             "export_svg": self.export_commands.export_svg,
             "export_3d": self.export_commands.export_3d,
             "export_bom": self.export_commands.export_bom,
+            "analyze_bom_jlcpcb": self.export_commands.analyze_bom_jlcpcb,
             # Library commands (footprint management)
             "list_libraries": self.library_commands.list_libraries,
             "search_footprints": self.library_commands.search_footprints,
@@ -353,6 +375,7 @@ class KiCADInterface:
             "get_symbol_info": self.symbol_library_commands.get_symbol_info,
             # JLCPCB API commands (complete parts catalog via API)
             "download_jlcpcb_database": self._handle_download_jlcpcb_database,
+            "get_jlcpcb_download_status": self._handle_get_jlcpcb_download_status,
             "search_jlcpcb_parts": self._handle_search_jlcpcb_parts,
             "get_jlcpcb_part": self._handle_get_jlcpcb_part,
             "get_jlcpcb_database_stats": self._handle_get_jlcpcb_database_stats,
@@ -1654,20 +1677,57 @@ class KiCADInterface:
     # JLCPCB API handlers
 
     def _handle_download_jlcpcb_database(self, params):
-        """Download JLCPCB parts database from official API or JLCSearch fallback"""
         try:
             force = params.get("force", False)
             source = params.get("source", "auto")
+            background = params.get("background", False)
+            confirm = params.get("confirm", False)
+            internal_worker = params.get("_internal_worker", False)
 
-            # Check if database exists
-            import os
-
-            stats = self.jlcpcb_parts.get_database_stats()
-            if stats["total_parts"] > 0 and not force:
+            if (
+                self.jlcpcb_download_thread is not None
+                and self.jlcpcb_download_thread.is_alive()
+                and not internal_worker
+            ):
+                now = time.time()
+                started = self.jlcpcb_download_status.get("startedAt")
+                elapsed = (
+                    round(now - float(started), 1)
+                    if started is not None
+                    else self.jlcpcb_download_status.get("elapsedSeconds", 0)
+                )
+                status = dict(self.jlcpcb_download_status)
+                status.update(
+                    {"isRunning": True, "elapsedSeconds": elapsed, "lastUpdated": now}
+                )
+                self.jlcpcb_download_status.update(
+                    {"isRunning": True, "elapsedSeconds": elapsed, "lastUpdated": now}
+                )
                 return {
                     "success": False,
-                    "message": "Database already exists. Use force=true to re-download.",
-                    "stats": stats,
+                    "started": False,
+                    "message": "JLCPCB download is already running",
+                    "status": status,
+                }
+
+            if self.jlcpcb_download_status.get("isRunning") and not internal_worker:
+                now = time.time()
+                started = self.jlcpcb_download_status.get("startedAt")
+                elapsed = (
+                    round(now - float(started), 1)
+                    if started is not None
+                    else self.jlcpcb_download_status.get("elapsedSeconds", 0)
+                )
+                status = dict(self.jlcpcb_download_status)
+                status.update({"elapsedSeconds": elapsed, "lastUpdated": now})
+                self.jlcpcb_download_status.update(
+                    {"elapsedSeconds": elapsed, "lastUpdated": now}
+                )
+                return {
+                    "success": False,
+                    "started": False,
+                    "message": "JLCPCB download is already running",
+                    "status": status,
                 }
 
             has_official_creds = all(
@@ -1678,56 +1738,498 @@ class KiCADInterface:
                 ]
             )
 
-            selected_source = source
-            if source == "auto":
-                selected_source = "official" if has_official_creds else "jlcsearch"
+            cached_public_estimate = None
+            public_cache_dir = os.path.join(
+                os.path.dirname(self.jlcpcb_parts.db_path),
+                "yaqwsx_archive_cache",
+            )
+            os.makedirs(public_cache_dir, exist_ok=True)
 
-            if selected_source == "official" and not has_official_creds:
+            def get_public_estimate():
+                nonlocal cached_public_estimate
+                if cached_public_estimate is None:
+                    cached_public_estimate = self.jlcpcb_client.estimate_yaqwsx_update(
+                        public_cache_dir,
+                        include_remote_check=False,
+                    )
+                    known_total_parts = self.jlcpcb_parts.get_metadata(
+                        "yaqwsx_last_total_parts"
+                    )
+                    if known_total_parts:
+                        try:
+                            cached_public_estimate["expectedTotalParts"] = int(
+                                known_total_parts
+                            )
+                        except Exception:
+                            pass
+                    cached_public_estimate["source"] = "public"
+                    cached_public_estimate["cacheDirectory"] = public_cache_dir
+                    cached_public_estimate["recommendedUseCase"] = (
+                        "Use when official credentials are unavailable; hosted snapshot from yaqwsx/jlcparts with incremental archive updates."
+                    )
+                return cached_public_estimate
+
+            def build_official_estimate(public_estimate):
+                estimated_download_mb = round(
+                    float(public_estimate.get("downloadSizeMB", 0.0)), 1
+                )
                 return {
-                    "success": False,
-                    "message": (
-                        "Official JLCPCB source requested but credentials are incomplete. "
-                        "Set JLCPCB_APP_ID, JLCPCB_API_KEY, and JLCPCB_API_SECRET."
+                    "source": "official",
+                    "available": has_official_creds,
+                    "estimatedPartCount": {
+                        "min": 6500000,
+                        "max": 7500000,
+                        "note": "Signed API full-catalog estimate; recent snapshots are around 7 million parts.",
+                    },
+                    "estimatedInStockParts": int(
+                        public_estimate.get("estimatedInStockParts", 650000)
                     ),
+                    "estimatedBasicParts": int(
+                        public_estimate.get("estimatedBasicParts", 350)
+                    ),
+                    "estimatedExtendedParts": int(
+                        public_estimate.get("estimatedExtendedParts", 6999650)
+                    ),
+                    "estimatedDownloadSizeMB": estimated_download_mb,
+                    "estimatedDatabaseSizeMB": round(
+                        float(public_estimate.get("estimatedDatabaseSizeMB", 1800)), 1
+                    ),
+                    "estimatedDownloadTimeMinutes": public_estimate.get(
+                        "estimatedDownloadTimeMinutes",
+                        {
+                            "min": 0,
+                            "max": 0,
+                            "note": "No estimate available",
+                        },
+                    ),
+                    "recommendedUseCase": "Use when you have valid API credentials and want upstream-signed full catalog data.",
                 }
 
-            warning = None
-            if selected_source == "official":
-                logger.info(
-                    "Downloading JLCPCB parts database from official JLCPCB API..."
+            db_path = self.jlcpcb_parts.db_path
+            has_existing_db = os.path.exists(db_path) and os.path.getsize(db_path) > 0
+            existing_stats = None
+            if has_existing_db and not force:
+                existing_stats = {
+                    "total_parts": None,
+                    "basic_parts": None,
+                    "extended_parts": None,
+                    "in_stock": None,
+                    "db_path": db_path,
+                }
+
+                public_estimate = get_public_estimate()
+                official_estimate = build_official_estimate(public_estimate)
+                options = {
+                    "official": official_estimate,
+                    "public": public_estimate,
+                }
+
+                now = time.time()
+                self.jlcpcb_download_status.update(
+                    {
+                        "isRunning": False,
+                        "stage": "awaiting_replace_and_source_selection",
+                        "source": None,
+                        "message": "Database already exists; waiting for replace confirmation and source selection",
+                        "lastUpdated": now,
+                        "existingStats": existing_stats,
+                        "options": options,
+                    }
                 )
-                parts = self.jlcpcb_client.download_full_database(
-                    callback=lambda page, total, msg: logger.info(
-                        f"[page {page}] {msg}"
+                return {
+                    "success": False,
+                    "requiresReplaceConfirmation": True,
+                    "requiresSourceSelection": True,
+                    "message": "Database already exists. Re-run with force=true to replace or keep current database.",
+                    "stats": existing_stats,
+                    "options": options,
+                }
+
+            if source == "auto":
+                public_estimate = get_public_estimate()
+                official_estimate = build_official_estimate(public_estimate)
+                now = time.time()
+                options = {
+                    "official": official_estimate,
+                    "public": public_estimate,
+                }
+                self.jlcpcb_download_status.update(
+                    {
+                        "isRunning": False,
+                        "stage": "awaiting_source_selection",
+                        "source": None,
+                        "message": "Select download source",
+                        "lastUpdated": now,
+                        "options": options,
+                    }
+                )
+                return {
+                    "success": False,
+                    "requiresSourceSelection": True,
+                    "options": options,
+                    "message": "Select source=official or source=public to continue",
+                }
+
+            if source not in ["official", "public"]:
+                return {
+                    "success": False,
+                    "message": "Unsupported source. Allowed: official, public",
+                }
+
+            if source == "official" and not has_official_creds:
+                public_estimate = get_public_estimate()
+                official_estimate = build_official_estimate(public_estimate)
+                return {
+                    "success": False,
+                    "message": "Official source selected but credentials are not configured",
+                    "requiresSourceSelection": True,
+                    "options": {
+                        "official": official_estimate,
+                        "public": public_estimate,
+                    },
+                }
+
+            if source == "public" and not confirm:
+                public_estimate = get_public_estimate()
+                now = time.time()
+                self.jlcpcb_download_status.update(
+                    {
+                        "isRunning": False,
+                        "stage": "awaiting_download_confirmation",
+                        "source": "public",
+                        "message": "public snapshot download requires confirmation",
+                        "lastUpdated": now,
+                        "estimate": public_estimate,
+                    }
+                )
+                return {
+                    "success": False,
+                    "requiresDownloadConfirmation": True,
+                    "attemptedSource": "public",
+                    "estimate": public_estimate,
+                    "message": "Confirm download to proceed with public snapshot source",
+                }
+
+            if background:
+                if self.jlcpcb_download_status.get("isRunning"):
+                    return {
+                        "success": False,
+                        "message": "JLCPCB database download already in progress",
+                        "status": self.jlcpcb_download_status,
+                    }
+
+                start_time = time.time()
+                self.jlcpcb_download_status.update(
+                    {
+                        "isRunning": True,
+                        "stage": "queued",
+                        "source": source,
+                        "message": "Download queued",
+                        "startedAt": start_time,
+                        "elapsedSeconds": 0,
+                        "downloadedParts": 0,
+                        "importedParts": 0,
+                        "totalParts": None,
+                        "lastUpdated": start_time,
+                        "error": None,
+                    }
+                )
+
+                def _background_download_worker():
+                    result = self._handle_download_jlcpcb_database(
+                        {
+                            "force": force,
+                            "source": source,
+                            "confirm": confirm,
+                            "background": False,
+                            "_internal_worker": True,
+                        }
                     )
+                    self.jlcpcb_download_last_result = result
+
+                    if not result.get("success") and self.jlcpcb_download_status.get(
+                        "isRunning"
+                    ):
+                        now = time.time()
+                        started_at = self.jlcpcb_download_status.get("startedAt") or now
+                        self.jlcpcb_download_status.update(
+                            {
+                                "isRunning": False,
+                                "stage": "failed",
+                                "message": result.get("message", "Download failed"),
+                                "error": result.get("message", "Download failed"),
+                                "elapsedSeconds": round(now - float(started_at), 1),
+                                "lastUpdated": now,
+                            }
+                        )
+
+                self.jlcpcb_download_thread = threading.Thread(
+                    target=_background_download_worker,
+                    name="jlcpcb-download-worker",
+                    daemon=True,
                 )
-                logger.info(
-                    f"Importing {len(parts)} official API parts into database..."
+                self.jlcpcb_download_thread.start()
+
+                return {
+                    "success": True,
+                    "started": True,
+                    "message": "JLCPCB database download started in background",
+                    "source": source,
+                    "status": self.jlcpcb_download_status,
+                }
+
+            start_time = time.time()
+            run_estimate = None
+            if source == "public":
+                run_estimate = get_public_estimate()
+            elif source == "official":
+                run_estimate = build_official_estimate(get_public_estimate())
+
+            self.jlcpcb_download_status.update(
+                {
+                    "isRunning": True,
+                    "stage": "starting",
+                    "source": source,
+                    "message": "Initializing download",
+                    "startedAt": start_time,
+                    "elapsedSeconds": 0,
+                    "downloadedParts": 0,
+                    "importedParts": 0,
+                    "totalParts": None,
+                    "lastUpdated": start_time,
+                    "error": None,
+                    "estimate": run_estimate,
+                }
+            )
+
+            if source == "official":
+                logger.info("Downloading JLCPCB parts database from official API...")
+
+                def official_download_callback(page, total, msg):
+                    now = time.time()
+                    self.jlcpcb_download_status.update(
+                        {
+                            "stage": "downloading",
+                            "message": msg,
+                            "downloadedParts": total,
+                            "elapsedSeconds": round(now - start_time, 1),
+                            "lastUpdated": now,
+                            "page": page,
+                        }
+                    )
+
+                parts = self.jlcpcb_client.download_full_database(
+                    callback=official_download_callback
                 )
+
+                def official_import_callback(curr, total, msg):
+                    now = time.time()
+                    self.jlcpcb_download_status.update(
+                        {
+                            "stage": "importing",
+                            "message": msg,
+                            "downloadedParts": len(parts),
+                            "importedParts": curr,
+                            "totalParts": total,
+                            "elapsedSeconds": round(now - start_time, 1),
+                            "lastUpdated": now,
+                        }
+                    )
+
                 self.jlcpcb_parts.import_parts(
-                    parts, progress_callback=lambda curr, total, msg: logger.info(msg)
+                    parts,
+                    progress_callback=official_import_callback,
                 )
             else:
                 logger.info(
-                    "Downloading JLCPCB parts database from JLCSearch fallback source..."
-                )
-                parts = self.jlcsearch_client.download_all_components(
-                    callback=lambda total, msg: logger.info(msg)
-                )
-                logger.info(f"Importing {len(parts)} JLCSearch parts into database...")
-                self.jlcpcb_parts.import_jlcsearch_parts(
-                    parts, progress_callback=lambda curr, total, msg: logger.info(msg)
-                )
-                warning = (
-                    "Using JLCSearch fallback source. Result size depends on public endpoint limits. "
-                    "For full catalog download, configure official JLCPCB credentials."
+                    "Downloading JLCPCB parts database from public snapshot (hosted by yaqwsx)..."
                 )
 
-            # Get final stats
+                import tempfile
+
+                extract_temp_dir = None
+                cache_dir = os.path.join(
+                    os.path.dirname(self.jlcpcb_parts.db_path),
+                    "yaqwsx_archive_cache",
+                )
+                os.makedirs(cache_dir, exist_ok=True)
+
+                def yaqwsx_download_callback(downloaded_bytes, total_bytes, msg):
+                    now = time.time()
+                    self.jlcpcb_download_status.update(
+                        {
+                            "stage": "downloading",
+                            "message": msg,
+                            "downloadedParts": round(
+                                downloaded_bytes / (1024 * 1024), 1
+                            ),
+                            "downloadedSizeMB": round(
+                                downloaded_bytes / (1024 * 1024), 1
+                            ),
+                            "totalSizeMB": round(total_bytes / (1024 * 1024), 1)
+                            if total_bytes
+                            else 0.0,
+                            "downloadedBytes": downloaded_bytes,
+                            "totalBytes": total_bytes,
+                            "elapsedSeconds": round(now - start_time, 1),
+                            "lastUpdated": now,
+                        }
+                    )
+
+                try:
+                    extract_temp_dir = tempfile.mkdtemp(prefix="yaqwsx-extract-")
+                    download = self.jlcpcb_client.download_yaqwsx_cache(
+                        cache_dir,
+                        extract_dir=extract_temp_dir,
+                        callback=yaqwsx_download_callback,
+                    )
+                    cache_db_path = download["cacheDbPath"]
+                    expected_total_parts = download.get("expectedTotalParts")
+
+                    self.jlcpcb_download_status.update(
+                        {
+                            "updatedArchiveParts": int(
+                                download.get("changedParts", 0) or 0
+                            ),
+                            "reusedArchiveParts": int(
+                                download.get("reusedParts", 0) or 0
+                            ),
+                            "archiveCacheDir": download.get("cacheDir", cache_dir),
+                            "totalParts": expected_total_parts
+                            if expected_total_parts is not None
+                            else self.jlcpcb_download_status.get("totalParts"),
+                        }
+                    )
+
+                    if expected_total_parts is not None:
+                        estimate = self.jlcpcb_download_status.get("estimate")
+                        if isinstance(estimate, dict):
+                            estimate = dict(estimate)
+                            estimate["expectedTotalParts"] = int(expected_total_parts)
+                            self.jlcpcb_download_status["estimate"] = estimate
+
+                    if int(download.get("changedParts", 0) or 0) == 0:
+                        stats = self.jlcpcb_parts.get_database_stats()
+                        no_change_time = time.time()
+                        self.jlcpcb_download_status.update(
+                            {
+                                "isRunning": False,
+                                "stage": "completed",
+                                "message": "No public snapshot archive updates detected",
+                                "elapsedSeconds": round(no_change_time - start_time, 1),
+                                "lastUpdated": no_change_time,
+                                "totalParts": stats["total_parts"],
+                                "importedParts": 0,
+                                "lastSuccess": {
+                                    "finishedAt": no_change_time,
+                                    "source": source,
+                                    "totalParts": stats["total_parts"],
+                                    "basicParts": stats["basic_parts"],
+                                    "extendedParts": stats["extended_parts"],
+                                    "inStock": stats["in_stock"],
+                                    "dbPath": stats["db_path"],
+                                    "updatedArchiveParts": 0,
+                                    "reusedArchiveParts": int(
+                                        download.get("reusedParts", 0) or 0
+                                    ),
+                                },
+                            }
+                        )
+                        self.jlcpcb_parts.set_metadata(
+                            "yaqwsx_last_total_parts", str(int(stats["total_parts"]))
+                        )
+                        return {
+                            "success": True,
+                            "total_parts": stats["total_parts"],
+                            "basic_parts": stats["basic_parts"],
+                            "extended_parts": stats["extended_parts"],
+                            "db_size_mb": round(
+                                os.path.getsize(self.jlcpcb_parts.db_path)
+                                / (1024 * 1024),
+                                2,
+                            ),
+                            "db_path": stats["db_path"],
+                            "source": source,
+                            "updatedArchiveParts": 0,
+                            "reusedArchiveParts": int(
+                                download.get("reusedParts", 0) or 0
+                            ),
+                        }
+
+                    last_imported = self.jlcpcb_parts.get_metadata("yaqwsx_last_update")
+                    incremental_since = int(last_imported) if last_imported else None
+
+                    def yaqwsx_import_callback(curr, total, msg):
+                        now = time.time()
+                        self.jlcpcb_download_status.update(
+                            {
+                                "stage": "importing",
+                                "message": msg,
+                                "importedParts": curr,
+                                "totalParts": total,
+                                "elapsedSeconds": round(now - start_time, 1),
+                                "lastUpdated": now,
+                            }
+                        )
+
+                    import_result = self.jlcpcb_parts.import_yaqwsx_cache(
+                        cache_db_path,
+                        in_stock_only=False,
+                        incremental_since=incremental_since,
+                        progress_callback=yaqwsx_import_callback,
+                    )
+
+                    max_last_update = import_result.get("max_last_update")
+                    if max_last_update is not None:
+                        self.jlcpcb_parts.set_metadata(
+                            "yaqwsx_last_update", str(int(max_last_update))
+                        )
+                finally:
+                    if extract_temp_dir and os.path.isdir(extract_temp_dir):
+                        try:
+                            shutil.rmtree(extract_temp_dir)
+                            logger.info(
+                                f"Cleaned temporary yaqwsx extraction directory: {extract_temp_dir}"
+                            )
+                        except Exception as cleanup_error:
+                            logger.warning(
+                                f"Failed to cleanup temporary yaqwsx extraction directory {extract_temp_dir}: {cleanup_error}"
+                            )
+
             stats = self.jlcpcb_parts.get_database_stats()
-
-            # Calculate database size
             db_size_mb = os.path.getsize(self.jlcpcb_parts.db_path) / (1024 * 1024)
+
+            end_time = time.time()
+            self.jlcpcb_download_status.update(
+                {
+                    "isRunning": False,
+                    "stage": "completed",
+                    "message": "Download and import completed",
+                    "elapsedSeconds": round(end_time - start_time, 1),
+                    "lastUpdated": end_time,
+                    "totalParts": stats["total_parts"],
+                    "importedParts": stats["total_parts"],
+                    "lastSuccess": {
+                        "finishedAt": end_time,
+                        "source": source,
+                        "totalParts": stats["total_parts"],
+                        "basicParts": stats["basic_parts"],
+                        "extendedParts": stats["extended_parts"],
+                        "inStock": stats["in_stock"],
+                        "dbPath": stats["db_path"],
+                        "updatedArchiveParts": self.jlcpcb_download_status.get(
+                            "updatedArchiveParts"
+                        ),
+                        "reusedArchiveParts": self.jlcpcb_download_status.get(
+                            "reusedArchiveParts"
+                        ),
+                    },
+                }
+            )
+            if source == "public":
+                self.jlcpcb_parts.set_metadata(
+                    "yaqwsx_last_total_parts", str(int(stats["total_parts"]))
+                )
 
             return {
                 "success": True,
@@ -1736,15 +2238,62 @@ class KiCADInterface:
                 "extended_parts": stats["extended_parts"],
                 "db_size_mb": round(db_size_mb, 2),
                 "db_path": stats["db_path"],
-                "source": selected_source,
-                "warning": warning,
+                "source": source,
+                "updatedArchiveParts": self.jlcpcb_download_status.get(
+                    "updatedArchiveParts"
+                ),
+                "reusedArchiveParts": self.jlcpcb_download_status.get(
+                    "reusedArchiveParts"
+                ),
             }
 
         except Exception as e:
             logger.error(f"Error downloading JLCPCB database: {e}", exc_info=True)
+            end_time = time.time()
+            started_at = self.jlcpcb_download_status.get("startedAt") or end_time
+            self.jlcpcb_download_status.update(
+                {
+                    "isRunning": False,
+                    "stage": "failed",
+                    "message": "Download failed",
+                    "error": str(e),
+                    "elapsedSeconds": round(end_time - float(started_at), 1),
+                    "lastUpdated": end_time,
+                }
+            )
             return {
                 "success": False,
                 "message": f"Failed to download database: {str(e)}",
+            }
+
+    def _handle_get_jlcpcb_download_status(self, params):
+        """Get current JLCPCB download progress status."""
+        try:
+            status = dict(self.jlcpcb_download_status)
+            if status.get("isRunning") and status.get("startedAt"):
+                status["elapsedSeconds"] = round(
+                    time.time() - float(status["startedAt"]), 1
+                )
+
+            return {
+                "success": True,
+                "status": status,
+                "summary": (
+                    f"{status.get('stage', 'unknown')} | "
+                    f"source={status.get('source', 'n/a')} | "
+                    f"downloaded={status.get('downloadedSizeMB', status.get('downloadedParts', 0))}/"
+                    f"{status.get('totalSizeMB', status.get('estimate', {}).get('downloadSizeMB', status.get('estimate', {}).get('estimatedUpdateDownloadMB', '?')))} MB | "
+                    f"imported={status.get('importedParts', 0)}/"
+                    f"{status.get('totalParts', status.get('estimate', {}).get('expectedTotalParts', status.get('estimate', {}).get('estimatedPartCount', {}).get('max', '?')))} parts | "
+                    f"evt={status.get('message', '')} | "
+                    f"elapsed={status.get('elapsedSeconds', 0)}s"
+                ),
+            }
+        except Exception as e:
+            logger.error(f"Error getting JLCPCB download status: {e}", exc_info=True)
+            return {
+                "success": False,
+                "message": f"Failed to get download status: {str(e)}",
             }
 
     def _handle_search_jlcpcb_parts(self, params):
