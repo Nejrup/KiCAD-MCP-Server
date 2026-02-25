@@ -257,5 +257,23 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
     }
   );
 
+  server.tool(
+    "get_drc_history",
+    {
+      limit: z.number().int().positive().optional().describe("Maximum number of most recent DRC runs to return (default 20)")
+    },
+    async ({ limit }) => {
+      logger.debug('Getting DRC history');
+      const result = await callKicadScript("get_drc_history", { limit });
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result)
+        }]
+      };
+    }
+  );
+
   logger.info('Design rule tools registered');
 }

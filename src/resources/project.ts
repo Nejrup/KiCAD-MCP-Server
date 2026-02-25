@@ -160,6 +160,37 @@ export function registerProjectResources(server: McpServer, callKicadScript: Com
     }
   );
 
+  server.resource(
+    "project_drc_history",
+    "kicad://project/drc-history",
+    async (uri) => {
+      logger.debug('Retrieving project DRC history');
+      const result = await callKicadScript("get_drc_history", { limit: 20 });
+
+      if (!result.success) {
+        logger.error(`Failed to retrieve project DRC history: ${result.errorDetails || result.message}`);
+        return {
+          contents: [{
+            uri: uri.href,
+            text: JSON.stringify({
+              error: "Failed to retrieve project DRC history",
+              details: result.errorDetails || result.message
+            }),
+            mimeType: "application/json"
+          }]
+        };
+      }
+
+      return {
+        contents: [{
+          uri: uri.href,
+          text: JSON.stringify(result),
+          mimeType: "application/json"
+        }]
+      };
+    }
+  );
+
   // ------------------------------------------------------
   // Project Summary Resource
   // ------------------------------------------------------

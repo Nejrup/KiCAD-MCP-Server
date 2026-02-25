@@ -6,12 +6,45 @@
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { KiCADMcpServer } from './server.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import { logger } from './logger.js';
 
 // Get the current directory
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+function applyConfigToEnvironment(config: Config): void {
+  if (config.pythonPath && !process.env.KICAD_PYTHON) {
+    process.env.KICAD_PYTHON = config.pythonPath;
+    logger.info('Loaded KICAD_PYTHON from config file');
+  }
+
+  const credentials = config.jlcpcb;
+  if (!credentials) {
+    return;
+  }
+
+  let applied = 0;
+
+  if (credentials.appId && !process.env.JLCPCB_APP_ID) {
+    process.env.JLCPCB_APP_ID = credentials.appId;
+    applied += 1;
+  }
+
+  if (credentials.apiKey && !process.env.JLCPCB_API_KEY) {
+    process.env.JLCPCB_API_KEY = credentials.apiKey;
+    applied += 1;
+  }
+
+  if (credentials.apiSecret && !process.env.JLCPCB_API_SECRET) {
+    process.env.JLCPCB_API_SECRET = credentials.apiSecret;
+    applied += 1;
+  }
+
+  if (applied > 0) {
+    logger.info(`Loaded ${applied} JLCPCB credential values from config file`);
+  }
+}
 
 /**
  * Main function to start the KiCAD MCP server
@@ -24,6 +57,7 @@ async function main() {
     
     // Load configuration
     const config = await loadConfig(options.configPath);
+    applyConfigToEnvironment(config);
     
     // Path to the Python script that interfaces with KiCAD
     const kicadScriptPath = join(dirname(__dirname), 'python', 'kicad_interface.py');
@@ -68,39 +102,43 @@ function parseCommandLineArgs(args: string[]) {
  * Setup graceful shutdown handlers
  */
 function setupGracefulShutdown(server: KiCADMcpServer) {
-  // Handle termination signals
-  process.on('SIGINT', async () => {
+  process.once('SIGINT', async () => {
     logger.info('Received SIGINT signal. Shutting down...');
-    await shutdownServer(server);
+    await shutdownServer(server, 0);
   });
-  
-  process.on('SIGTERM', async () => {
+
+  process.once('SIGTERM', async () => {
     logger.info('Received SIGTERM signal. Shutting down...');
-    await shutdownServer(server);
+    await shutdownServer(server, 0);
   });
-  
-  // Handle uncaught exceptions
+
   process.on('uncaughtException', async (error) => {
     logger.error(`Uncaught exception: ${error}`);
-    await shutdownServer(server);
+    await shutdownServer(server, 1);
   });
-  
-  // Handle unhandled promise rejections
+
   process.on('unhandledRejection', async (reason) => {
     logger.error(`Unhandled promise rejection: ${reason}`);
-    await shutdownServer(server);
+    await shutdownServer(server, 1);
   });
 }
 
 /**
  * Shut down the server and exit
  */
-async function shutdownServer(server: KiCADMcpServer) {
+let shutdownInProgress = false;
+
+async function shutdownServer(server: KiCADMcpServer, exitCode: number) {
+  if (shutdownInProgress) {
+    return;
+  }
+  shutdownInProgress = true;
+
   try {
     logger.info('Shutting down KiCAD MCP server...');
     await server.stop();
     logger.info('Server shutdown complete. Exiting...');
-    process.exit(0);
+    process.exit(exitCode);
   } catch (error) {
     logger.error(`Error during shutdown: ${error}`);
     process.exit(1);

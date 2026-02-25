@@ -8,7 +8,8 @@ import logging
 import math
 from typing import Dict, Any, Optional, List, Tuple
 
-logger = logging.getLogger('kicad_interface')
+logger = logging.getLogger("kicad_interface")
+
 
 class RoutingCommands:
     """Handles routing-related KiCAD operations"""
@@ -24,7 +25,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             name = params.get("name")
@@ -34,7 +35,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing net name",
-                    "errorDetails": "name parameter is required"
+                    "errorDetails": "name parameter is required",
                 }
 
             # Create new net
@@ -58,8 +59,8 @@ class RoutingCommands:
                 "net": {
                     "name": name,
                     "class": net_class if net_class else "Default",
-                    "netcode": net.GetNetCode()
-                }
+                    "netcode": net.GetNetCode(),
+                },
             }
 
         except Exception as e:
@@ -67,7 +68,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to add net",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def route_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -77,7 +78,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             start = params.get("start")
@@ -91,7 +92,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing parameters",
-                    "errorDetails": "start and end points are required"
+                    "errorDetails": "start and end points are required",
                 }
 
             # Get layer ID
@@ -100,7 +101,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Invalid layer",
-                    "errorDetails": f"Layer '{layer}' does not exist"
+                    "errorDetails": f"Layer '{layer}' does not exist",
                 }
 
             # Get start point
@@ -133,14 +134,16 @@ class RoutingCommands:
             # Add via if requested and net is specified
             if via and net:
                 via_point = end_point
-                self.add_via({
-                    "position": {
-                        "x": via_point.x / 1000000,
-                        "y": via_point.y / 1000000,
-                        "unit": "mm"
-                    },
-                    "net": net
-                })
+                self.add_via(
+                    {
+                        "position": {
+                            "x": via_point.x / 1000000,
+                            "y": via_point.y / 1000000,
+                            "unit": "mm",
+                        },
+                        "net": net,
+                    }
+                )
 
             return {
                 "success": True,
@@ -149,17 +152,17 @@ class RoutingCommands:
                     "start": {
                         "x": start_point.x / 1000000,
                         "y": start_point.y / 1000000,
-                        "unit": "mm"
+                        "unit": "mm",
                     },
                     "end": {
                         "x": end_point.x / 1000000,
                         "y": end_point.y / 1000000,
-                        "unit": "mm"
+                        "unit": "mm",
                     },
                     "layer": layer,
                     "width": track.GetWidth() / 1000000,
-                    "net": net
-                }
+                    "net": net,
+                },
             }
 
         except Exception as e:
@@ -167,7 +170,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to route trace",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def add_via(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -177,7 +180,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             position = params.get("position")
@@ -191,22 +194,28 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing position",
-                    "errorDetails": "position parameter is required"
+                    "errorDetails": "position parameter is required",
                 }
 
             # Create via
             via = pcbnew.PCB_VIA(self.board)
-            
+
             # Set position
-            scale = 1000000 if position["unit"] == "mm" else 25400000  # mm or inch to nm
+            scale = (
+                1000000 if position["unit"] == "mm" else 25400000
+            )  # mm or inch to nm
             x_nm = int(position["x"] * scale)
             y_nm = int(position["y"] * scale)
             via.SetPosition(pcbnew.VECTOR2I(x_nm, y_nm))
 
             # Set size and drill (default to board's current via settings)
             design_settings = self.board.GetDesignSettings()
-            via.SetWidth(int(size * 1000000) if size else design_settings.GetCurrentViaSize())
-            via.SetDrill(int(drill * 1000000) if drill else design_settings.GetCurrentViaDrill())
+            via.SetWidth(
+                int(size * 1000000) if size else design_settings.GetCurrentViaSize()
+            )
+            via.SetDrill(
+                int(drill * 1000000) if drill else design_settings.GetCurrentViaDrill()
+            )
 
             # Set layers
             from_id = self.board.GetLayerID(from_layer)
@@ -215,7 +224,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Invalid layer",
-                    "errorDetails": "Specified layers do not exist"
+                    "errorDetails": "Specified layers do not exist",
                 }
             via.SetLayerPair(from_id, to_id)
 
@@ -237,14 +246,14 @@ class RoutingCommands:
                     "position": {
                         "x": position["x"],
                         "y": position["y"],
-                        "unit": position["unit"]
+                        "unit": position["unit"],
                     },
                     "size": via.GetWidth() / 1000000,
                     "drill": via.GetDrill() / 1000000,
                     "from_layer": from_layer,
                     "to_layer": to_layer,
-                    "net": net
-                }
+                    "net": net,
+                },
             }
 
         except Exception as e:
@@ -252,7 +261,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to add via",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def delete_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -262,7 +271,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             trace_uuid = params.get("traceUuid")
@@ -275,7 +284,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing parameters",
-                    "errorDetails": "One of traceUuid, position, or net must be provided"
+                    "errorDetails": "One of traceUuid, position, or net must be provided",
                 }
 
             # Delete by net name (bulk delete)
@@ -304,7 +313,7 @@ class RoutingCommands:
                 return {
                     "success": True,
                     "message": f"Deleted {len(tracks_to_remove)} traces on net '{net_name}'",
-                    "deletedCount": len(tracks_to_remove)
+                    "deletedCount": len(tracks_to_remove),
                 }
 
             # Find track by UUID
@@ -319,25 +328,24 @@ class RoutingCommands:
                     return {
                         "success": False,
                         "message": "Track not found",
-                        "errorDetails": f"Could not find track with UUID: {trace_uuid}"
+                        "errorDetails": f"Could not find track with UUID: {trace_uuid}",
                     }
 
                 self.board.Remove(track)
-                return {
-                    "success": True,
-                    "message": f"Deleted track: {trace_uuid}"
-                }
+                return {"success": True, "message": f"Deleted track: {trace_uuid}"}
 
             # Find track by position
             if position:
-                scale = 1000000 if position["unit"] == "mm" else 25400000  # mm or inch to nm
+                scale = (
+                    1000000 if position["unit"] == "mm" else 25400000
+                )  # mm or inch to nm
                 x_nm = int(position["x"] * scale)
                 y_nm = int(position["y"] * scale)
                 point = pcbnew.VECTOR2I(x_nm, y_nm)
 
                 # Find closest track
                 closest_track = None
-                min_distance = float('inf')
+                min_distance = float("inf")
                 for track in self.board.Tracks():
                     dist = self._point_to_track_distance(point, track)
                     if dist < min_distance:
@@ -348,13 +356,13 @@ class RoutingCommands:
                     self.board.Remove(closest_track)
                     return {
                         "success": True,
-                        "message": "Deleted track at specified position"
+                        "message": "Deleted track at specified position",
                     }
                 else:
                     return {
                         "success": False,
                         "message": "No track found",
-                        "errorDetails": "No track found near specified position"
+                        "errorDetails": "No track found near specified position",
                     }
 
         except Exception as e:
@@ -362,7 +370,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to delete trace",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def delete_all_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -380,7 +388,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             include_vias = params.get("includeVias", True)
@@ -416,7 +424,7 @@ class RoutingCommands:
                 "success": True,
                 "message": msg,
                 "tracesDeleted": len(tracks_to_remove),
-                "viasDeleted": len(vias_to_remove)
+                "viasDeleted": len(vias_to_remove),
             }
 
         except Exception as e:
@@ -424,7 +432,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to delete all traces",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def get_nets_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -434,7 +442,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             nets = []
@@ -442,23 +450,150 @@ class RoutingCommands:
             for net_code in range(netinfo.GetNetCount()):
                 net = netinfo.GetNetItem(net_code)
                 if net:
-                    nets.append({
-                        "name": net.GetNetname(),
-                        "code": net.GetNetCode(),
-                        "class": net.GetClassName()
-                    })
+                    nets.append(
+                        {
+                            "name": net.GetNetname(),
+                            "code": net.GetNetCode(),
+                            "class": net.GetClassName(),
+                        }
+                    )
 
-            return {
-                "success": True,
-                "nets": nets
-            }
+            return {"success": True, "nets": nets}
 
         except Exception as e:
             logger.error(f"Error getting nets list: {str(e)}")
             return {
                 "success": False,
                 "message": "Failed to get nets list",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
+            }
+
+    def analyze_nets(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            if not self.board:
+                return {
+                    "success": False,
+                    "message": "No board is loaded",
+                    "errorDetails": "Load or create a board first",
+                }
+
+            include_unconnected = bool(params.get("includeUnconnected", False))
+            only_problematic = bool(params.get("onlyProblematic", False))
+            min_pad_count = int(params.get("minPadCount", 1) or 1)
+
+            scale = 1000000.0
+            net_data: Dict[str, Dict[str, Any]] = {}
+
+            for footprint in self.board.GetFootprints():
+                ref = footprint.GetReference()
+                for pad in footprint.Pads():
+                    net_name = pad.GetNetname()
+                    net_code = pad.GetNetCode()
+
+                    if net_code == 0 and not include_unconnected:
+                        continue
+
+                    key = net_name if net_name else "<unconnected>"
+                    item = net_data.setdefault(
+                        key,
+                        {
+                            "name": key,
+                            "code": net_code,
+                            "padCount": 0,
+                            "componentReferences": set(),
+                            "trackCount": 0,
+                            "viaCount": 0,
+                            "totalTrackLengthMm": 0.0,
+                        },
+                    )
+                    item["padCount"] += 1
+                    item["componentReferences"].add(ref)
+
+            for track in self.board.Tracks():
+                net_name = track.GetNetname() or "<unconnected>"
+                if net_name not in net_data:
+                    if include_unconnected and net_name == "<unconnected>":
+                        net_data[net_name] = {
+                            "name": net_name,
+                            "code": 0,
+                            "padCount": 0,
+                            "componentReferences": set(),
+                            "trackCount": 0,
+                            "viaCount": 0,
+                            "totalTrackLengthMm": 0.0,
+                        }
+                    else:
+                        continue
+
+                if track.Type() == pcbnew.PCB_VIA_T:
+                    net_data[net_name]["viaCount"] += 1
+                else:
+                    net_data[net_name]["trackCount"] += 1
+                    net_data[net_name]["totalTrackLengthMm"] += (
+                        track.GetLength() / scale
+                    )
+
+            analyzed = []
+            floating_nets = 0
+            unrouted_nets = 0
+
+            for net in net_data.values():
+                refs = sorted(list(net["componentReferences"]))
+                pad_count = int(net["padCount"])
+                track_count = int(net["trackCount"])
+                component_count = len(refs)
+                is_floating = pad_count <= 1
+                is_unrouted = (
+                    pad_count >= 2 and track_count == 0 and int(net["viaCount"]) == 0
+                )
+
+                if is_floating:
+                    floating_nets += 1
+                if is_unrouted:
+                    unrouted_nets += 1
+
+                net_result = {
+                    "name": net["name"],
+                    "code": net["code"],
+                    "padCount": pad_count,
+                    "componentCount": component_count,
+                    "components": refs,
+                    "trackCount": track_count,
+                    "viaCount": int(net["viaCount"]),
+                    "totalTrackLengthMm": round(float(net["totalTrackLengthMm"]), 4),
+                    "isFloating": is_floating,
+                    "isUnrouted": is_unrouted,
+                }
+
+                if pad_count < min_pad_count:
+                    continue
+                if only_problematic and not (is_floating or is_unrouted):
+                    continue
+
+                analyzed.append(net_result)
+
+            analyzed.sort(
+                key=lambda x: (x["isUnrouted"], x["isFloating"], x["padCount"]),
+                reverse=True,
+            )
+
+            return {
+                "success": True,
+                "summary": {
+                    "netCount": len(analyzed),
+                    "floatingNetCount": floating_nets,
+                    "unroutedNetCount": unrouted_nets,
+                    "onlyProblematic": only_problematic,
+                },
+                "nets": analyzed,
+            }
+
+        except Exception as e:
+            logger.error(f"Error analyzing nets: {str(e)}")
+            return {
+                "success": False,
+                "message": "Failed to analyze nets",
+                "errorDetails": str(e),
             }
 
     def query_traces(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -468,7 +603,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             # Get filter parameters
@@ -523,45 +658,45 @@ class RoutingCommands:
 
                 if is_via:
                     pos = track.GetPosition()
-                    vias.append({
-                        "uuid": str(track.m_Uuid),
-                        "position": {
-                            "x": pos.x / scale,
-                            "y": pos.y / scale,
-                            "unit": "mm"
-                        },
-                        "net": track.GetNetname(),
-                        "netCode": track.GetNetCode(),
-                        "diameter": track.GetWidth() / scale,
-                        "drill": track.GetDrillValue() / scale
-                    })
+                    vias.append(
+                        {
+                            "uuid": str(track.m_Uuid),
+                            "position": {
+                                "x": pos.x / scale,
+                                "y": pos.y / scale,
+                                "unit": "mm",
+                            },
+                            "net": track.GetNetname(),
+                            "netCode": track.GetNetCode(),
+                            "diameter": track.GetWidth() / scale,
+                            "drill": track.GetDrillValue() / scale,
+                        }
+                    )
                 else:
                     start = track.GetStart()
                     end = track.GetEnd()
-                    traces.append({
-                        "uuid": str(track.m_Uuid),
-                        "net": track.GetNetname(),
-                        "netCode": track.GetNetCode(),
-                        "layer": self.board.GetLayerName(track.GetLayer()),
-                        "width": track.GetWidth() / scale,
-                        "start": {
-                            "x": start.x / scale,
-                            "y": start.y / scale,
-                            "unit": "mm"
-                        },
-                        "end": {
-                            "x": end.x / scale,
-                            "y": end.y / scale,
-                            "unit": "mm"
-                        },
-                        "length": track.GetLength() / scale
-                    })
+                    traces.append(
+                        {
+                            "uuid": str(track.m_Uuid),
+                            "net": track.GetNetname(),
+                            "netCode": track.GetNetCode(),
+                            "layer": self.board.GetLayerName(track.GetLayer()),
+                            "width": track.GetWidth() / scale,
+                            "start": {
+                                "x": start.x / scale,
+                                "y": start.y / scale,
+                                "unit": "mm",
+                            },
+                            "end": {
+                                "x": end.x / scale,
+                                "y": end.y / scale,
+                                "unit": "mm",
+                            },
+                            "length": track.GetLength() / scale,
+                        }
+                    )
 
-            result = {
-                "success": True,
-                "traceCount": len(traces),
-                "traces": traces
-            }
+            result = {"success": True, "traceCount": len(traces), "traces": traces}
 
             if include_vias:
                 result["viaCount"] = len(vias)
@@ -574,7 +709,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to query traces",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def modify_trace(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -588,7 +723,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             # Identification parameters
@@ -604,7 +739,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing trace identifier",
-                    "errorDetails": "Provide either 'uuid' or 'position' to identify the trace"
+                    "errorDetails": "Provide either 'uuid' or 'position' to identify the trace",
                 }
 
             scale = 1000000  # nm to mm conversion
@@ -625,7 +760,7 @@ class RoutingCommands:
                 point = pcbnew.VECTOR2I(x_nm, y_nm)
 
                 # Find closest track
-                min_distance = float('inf')
+                min_distance = float("inf")
                 for item in self.board.Tracks():
                     dist = self._point_to_track_distance(point, item)
                     if dist < min_distance:
@@ -640,7 +775,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Track not found",
-                    "errorDetails": "Could not find track with specified identifier"
+                    "errorDetails": "Could not find track with specified identifier",
                 }
 
             # Check if it's a via (some modifications don't apply)
@@ -659,7 +794,7 @@ class RoutingCommands:
                     return {
                         "success": False,
                         "message": "Invalid layer",
-                        "errorDetails": f"Layer '{new_layer}' not found"
+                        "errorDetails": f"Layer '{new_layer}' not found",
                     }
                 track.SetLayer(layer_id)
                 modifications.append(f"layer={new_layer}")
@@ -671,7 +806,7 @@ class RoutingCommands:
                     return {
                         "success": False,
                         "message": "Invalid net",
-                        "errorDetails": f"Net '{new_net}' not found"
+                        "errorDetails": f"Net '{new_net}' not found",
                     }
                 track.SetNet(net)
                 modifications.append(f"net={new_net}")
@@ -680,14 +815,14 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No modifications specified",
-                    "errorDetails": "Provide at least one of: width, layer, net"
+                    "errorDetails": "Provide at least one of: width, layer, net",
                 }
 
             return {
                 "success": True,
                 "message": f"Modified trace: {', '.join(modifications)}",
                 "uuid": str(track.m_Uuid),
-                "modifications": modifications
+                "modifications": modifications,
             }
 
         except Exception as e:
@@ -695,7 +830,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to modify trace",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def copy_routing_pattern(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -710,7 +845,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             source_refs = params.get("sourceRefs", [])  # e.g., ["U1", "U2", "U3"]
@@ -722,14 +857,14 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing component references",
-                    "errorDetails": "Provide both 'sourceRefs' and 'targetRefs' arrays"
+                    "errorDetails": "Provide both 'sourceRefs' and 'targetRefs' arrays",
                 }
 
             if len(source_refs) != len(target_refs):
                 return {
                     "success": False,
                     "message": "Mismatched component counts",
-                    "errorDetails": f"sourceRefs has {len(source_refs)} items, targetRefs has {len(target_refs)}"
+                    "errorDetails": f"sourceRefs has {len(source_refs)} items, targetRefs has {len(target_refs)}",
                 }
 
             scale = 1000000  # nm to mm conversion
@@ -743,7 +878,7 @@ class RoutingCommands:
                     return {
                         "success": False,
                         "message": "Component not found",
-                        "errorDetails": f"Component '{ref}' not found on board"
+                        "errorDetails": f"Component '{ref}' not found on board",
                     }
 
             # Calculate offset from first source to first target component
@@ -793,7 +928,9 @@ class RoutingCommands:
 
                 # Create new track
                 new_track = pcbnew.PCB_TRACK(self.board)
-                new_track.SetStart(pcbnew.VECTOR2I(start.x + offset_x, start.y + offset_y))
+                new_track.SetStart(
+                    pcbnew.VECTOR2I(start.x + offset_x, start.y + offset_y)
+                )
                 new_track.SetEnd(pcbnew.VECTOR2I(end.x + offset_x, end.y + offset_y))
                 new_track.SetLayer(track.GetLayer())
 
@@ -825,15 +962,11 @@ class RoutingCommands:
             result = {
                 "success": True,
                 "message": f"Copied routing pattern: {created_traces} traces, {created_vias} vias",
-                "offset": {
-                    "x": offset_x / scale,
-                    "y": offset_y / scale,
-                    "unit": "mm"
-                },
+                "offset": {"x": offset_x / scale, "y": offset_y / scale, "unit": "mm"},
                 "createdTraces": created_traces,
                 "createdVias": created_vias,
                 "sourceComponents": source_refs,
-                "targetComponents": target_refs
+                "targetComponents": target_refs,
             }
 
             return result
@@ -843,7 +976,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to copy routing pattern",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def create_netclass(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -853,7 +986,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             name = params.get("name")
@@ -871,12 +1004,12 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing netclass name",
-                    "errorDetails": "name parameter is required"
+                    "errorDetails": "name parameter is required",
                 }
 
             # Get net classes
             net_classes = self.board.GetNetClasses()
-            
+
             # Create new net class if it doesn't exist
             if not net_classes.Find(name):
                 netclass = pcbnew.NETCLASS(name)
@@ -924,8 +1057,8 @@ class RoutingCommands:
                     "uviaDrill": netclass.GetMicroViaDrill() / scale,
                     "diffPairWidth": netclass.GetDiffPairWidth() / scale,
                     "diffPairGap": netclass.GetDiffPairGap() / scale,
-                    "nets": nets
-                }
+                    "nets": nets,
+                },
             }
 
         except Exception as e:
@@ -933,9 +1066,9 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to create net class",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
-            
+
     def add_copper_pour(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Add a copper pour (zone) to the PCB"""
         try:
@@ -943,7 +1076,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             layer = params.get("layer", "F.Cu")
@@ -953,12 +1086,12 @@ class RoutingCommands:
             points = params.get("points", [])
             priority = params.get("priority", 0)
             fill_type = params.get("fillType", "solid")  # solid or hatched
-            
+
             if not points or len(points) < 3:
                 return {
                     "success": False,
                     "message": "Missing points",
-                    "errorDetails": "At least 3 points are required for copper pour outline"
+                    "errorDetails": "At least 3 points are required for copper pour outline",
                 }
 
             # Get layer ID
@@ -967,13 +1100,13 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Invalid layer",
-                    "errorDetails": f"Layer '{layer}' does not exist"
+                    "errorDetails": f"Layer '{layer}' does not exist",
                 }
 
             # Create zone
             zone = pcbnew.ZONE(self.board)
             zone.SetLayer(layer_id)
-            
+
             # Set net if provided
             if net:
                 netinfo = self.board.GetNetInfo()
@@ -981,22 +1114,22 @@ class RoutingCommands:
                 if nets_map.has_key(net):
                     net_obj = nets_map[net]
                     zone.SetNet(net_obj)
-            
+
             # Set zone properties
             scale = 1000000  # mm to nm
             zone.SetAssignedPriority(priority)
-            
+
             if clearance is not None:
                 zone.SetLocalClearance(int(clearance * scale))
-            
+
             zone.SetMinThickness(int(min_width * scale))
-            
+
             # Set fill type
             if fill_type == "hatched":
                 zone.SetFillMode(pcbnew.ZONE_FILL_MODE_HATCH_PATTERN)
             else:
                 zone.SetFillMode(pcbnew.ZONE_FILL_MODE_POLYGONS)
-            
+
             # Create outline
             outline = zone.Outline()
             outline.NewOutline()  # Create a new outline contour first
@@ -1007,7 +1140,7 @@ class RoutingCommands:
                 x_nm = int(point["x"] * scale)
                 y_nm = int(point["y"] * scale)
                 outline.Append(pcbnew.VECTOR2I(x_nm, y_nm))  # Add point to outline
-            
+
             # Add zone to board
             self.board.Add(zone)
 
@@ -1027,8 +1160,8 @@ class RoutingCommands:
                     "minWidth": min_width,
                     "priority": priority,
                     "fillType": fill_type,
-                    "pointCount": len(points)
-                }
+                    "pointCount": len(points),
+                },
             }
 
         except Exception as e:
@@ -1036,9 +1169,9 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to add copper pour",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
-            
+
     def route_differential_pair(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Route a differential pair between two sets of points or pads"""
         try:
@@ -1046,7 +1179,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "No board is loaded",
-                    "errorDetails": "Load or create a board first"
+                    "errorDetails": "Load or create a board first",
                 }
 
             start_pos = params.get("startPos")
@@ -1061,7 +1194,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Missing parameters",
-                    "errorDetails": "startPos, endPos, netPos, and netNeg are required"
+                    "errorDetails": "startPos, endPos, netPos, and netNeg are required",
                 }
 
             # Get layer ID
@@ -1070,7 +1203,7 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Invalid layer",
-                    "errorDetails": f"Layer '{layer}' does not exist"
+                    "errorDetails": f"Layer '{layer}' does not exist",
                 }
 
             # Get nets
@@ -1084,65 +1217,73 @@ class RoutingCommands:
                 return {
                     "success": False,
                     "message": "Nets not found",
-                    "errorDetails": "One or both nets specified for the differential pair do not exist"
+                    "errorDetails": "One or both nets specified for the differential pair do not exist",
                 }
 
             # Get start and end points
             start_point = self._get_point(start_pos)
             end_point = self._get_point(end_pos)
-            
+
             # Calculate offset vectors for the two traces
             # First, get the direction vector from start to end
             dx = end_point.x - start_point.x
             dy = end_point.y - start_point.y
             length = math.sqrt(dx * dx + dy * dy)
-            
+
             if length <= 0:
                 return {
                     "success": False,
                     "message": "Invalid points",
-                    "errorDetails": "Start and end points must be different"
+                    "errorDetails": "Start and end points must be different",
                 }
-                
+
             # Normalize direction vector
             dx /= length
             dy /= length
-            
+
             # Get perpendicular vector
             px = -dy
             py = dx
-            
+
             # Set default gap if not provided
             if gap is None:
                 gap = 0.2  # mm
-                
+
             # Convert to nm
             gap_nm = int(gap * 1000000)
-            
+
             # Calculate offsets
             offset_x = int(px * gap_nm / 2)
             offset_y = int(py * gap_nm / 2)
-            
+
             # Create positive and negative trace points
-            pos_start = pcbnew.VECTOR2I(int(start_point.x + offset_x), int(start_point.y + offset_y))
-            pos_end = pcbnew.VECTOR2I(int(end_point.x + offset_x), int(end_point.y + offset_y))
-            neg_start = pcbnew.VECTOR2I(int(start_point.x - offset_x), int(start_point.y - offset_y))
-            neg_end = pcbnew.VECTOR2I(int(end_point.x - offset_x), int(end_point.y - offset_y))
-            
+            pos_start = pcbnew.VECTOR2I(
+                int(start_point.x + offset_x), int(start_point.y + offset_y)
+            )
+            pos_end = pcbnew.VECTOR2I(
+                int(end_point.x + offset_x), int(end_point.y + offset_y)
+            )
+            neg_start = pcbnew.VECTOR2I(
+                int(start_point.x - offset_x), int(start_point.y - offset_y)
+            )
+            neg_end = pcbnew.VECTOR2I(
+                int(end_point.x - offset_x), int(end_point.y - offset_y)
+            )
+
             # Create positive trace
             pos_track = pcbnew.PCB_TRACK(self.board)
             pos_track.SetStart(pos_start)
             pos_track.SetEnd(pos_end)
             pos_track.SetLayer(layer_id)
             pos_track.SetNet(net_pos_obj)
-            
+
             # Create negative trace
             neg_track = pcbnew.PCB_TRACK(self.board)
             neg_track.SetStart(neg_start)
             neg_track.SetEnd(neg_end)
             neg_track.SetLayer(layer_id)
             neg_track.SetNet(net_neg_obj)
-            
+
             # Set width
             if width:
                 trace_width_nm = int(width * 1000000)
@@ -1153,7 +1294,7 @@ class RoutingCommands:
                 trace_width = self.board.GetDesignSettings().GetCurrentTrackWidth()
                 pos_track.SetWidth(trace_width)
                 neg_track.SetWidth(trace_width)
-            
+
             # Add tracks to board
             self.board.Add(pos_track)
             self.board.Add(neg_track)
@@ -1167,8 +1308,8 @@ class RoutingCommands:
                     "layer": layer,
                     "width": pos_track.GetWidth() / 1000000,
                     "gap": gap,
-                    "length": length / 1000000
-                }
+                    "length": length / 1000000,
+                },
             }
 
         except Exception as e:
@@ -1176,7 +1317,7 @@ class RoutingCommands:
             return {
                 "success": False,
                 "message": "Failed to route differential pair",
-                "errorDetails": str(e)
+                "errorDetails": str(e),
             }
 
     def _get_point(self, point_spec: Dict[str, Any]) -> pcbnew.VECTOR2I:
@@ -1194,34 +1335,33 @@ class RoutingCommands:
                     return pad.GetPosition()
         raise ValueError("Invalid point specification")
 
-    def _point_to_track_distance(self, point: pcbnew.VECTOR2I, track: pcbnew.PCB_TRACK) -> float:
+    def _point_to_track_distance(
+        self, point: pcbnew.VECTOR2I, track: pcbnew.PCB_TRACK
+    ) -> float:
         """Calculate distance from point to track segment"""
         start = track.GetStart()
         end = track.GetEnd()
-        
+
         # Vector from start to end
         v = pcbnew.VECTOR2I(end.x - start.x, end.y - start.y)
         # Vector from start to point
         w = pcbnew.VECTOR2I(point.x - start.x, point.y - start.y)
-        
+
         # Length of track squared
         c1 = v.x * v.x + v.y * v.y
         if c1 == 0:
             return self._point_distance(point, start)
-            
+
         # Projection coefficient
         c2 = float(w.x * v.x + w.y * v.y) / c1
-        
+
         if c2 < 0:
             return self._point_distance(point, start)
         elif c2 > 1:
             return self._point_distance(point, end)
-            
+
         # Point on line
-        proj = pcbnew.VECTOR2I(
-            int(start.x + c2 * v.x),
-            int(start.y + c2 * v.y)
-        )
+        proj = pcbnew.VECTOR2I(int(start.x + c2 * v.x), int(start.y + c2 * v.y))
         return self._point_distance(point, proj)
 
     def _point_distance(self, p1: pcbnew.VECTOR2I, p2: pcbnew.VECTOR2I) -> float:

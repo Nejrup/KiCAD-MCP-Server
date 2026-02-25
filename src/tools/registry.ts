@@ -48,6 +48,7 @@ export const toolCategories: ToolCategory[] = [
       "edit_component",
       "find_component",
       "get_component_properties",
+      "get_component_connections",
       "add_component_annotation",
       "group_components",
       "replace_component"
@@ -62,6 +63,7 @@ export const toolCategories: ToolCategory[] = [
       "export_svg",
       "export_3d",
       "export_bom",
+      "analyze_bom_jlcpcb",
       "export_netlist",
       "export_position_file",
       "export_vrml"
@@ -74,6 +76,7 @@ export const toolCategories: ToolCategory[] = [
       "set_design_rules",
       "get_design_rules",
       "run_drc",
+      "get_drc_history",
       "add_net_class",
       "assign_net_to_class",
       "set_layer_constraints",
@@ -110,6 +113,7 @@ export const toolCategories: ToolCategory[] = [
     description: "Advanced routing operations: vias, copper pours",
     tools: [
       "add_via",
+      "analyze_nets",
       "add_copper_pour"
     ]
   }

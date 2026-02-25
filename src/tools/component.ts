@@ -353,5 +353,27 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
     }
   );
 
+  server.tool(
+    "get_component_connections",
+    {
+      reference: z.string().describe("Reference designator of the component (e.g., 'U1', 'J2')"),
+      includeSameComponent: z.boolean().optional().describe("Include connections to other pads on the same component")
+    },
+    async ({ reference, includeSameComponent }) => {
+      logger.debug(`Getting component connections for: ${reference}`);
+      const result = await callKicadScript("get_component_connections", {
+        reference,
+        includeSameComponent
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result)
+        }]
+      };
+    }
+  );
+
   logger.info('Component management tools registered');
 }
