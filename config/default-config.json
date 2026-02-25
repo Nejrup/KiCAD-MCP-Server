@@ -5,5 +5,10 @@
   "pythonPath": "",
   "kicadPath": "",
   "logLevel": "info",
-  "logDir": ""
+  "logDir": "",
+  "jlcpcb": {
+    "appId": "",
+    "apiKey": "",
+    "apiSecret": ""
+  }
 }

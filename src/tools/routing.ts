@@ -217,6 +217,24 @@ export function registerRoutingTools(server: McpServer, callKicadScript: Functio
     }
   );
 
+  server.tool(
+    "analyze_nets",
+    {
+      includeUnconnected: z.boolean().optional().describe("Include unconnected net entries"),
+      onlyProblematic: z.boolean().optional().describe("Return only floating/unrouted nets"),
+      minPadCount: z.number().int().positive().optional().describe("Minimum pad count for nets to include")
+    },
+    async (args: any) => {
+      const result = await callKicadScript("analyze_nets", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
   // Refill zones tool
   server.tool(
     "refill_zones",

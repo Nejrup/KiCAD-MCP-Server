@@ -37,9 +37,9 @@ import { registerDesignPrompts } from './prompts/design.js';
 
 /**
  * Find the Python executable to use
- * Prioritizes virtual environment if available, falls back to system Python
+ * Prioritizes explicit override, then venv, then platform/system Python
  */
-function findPythonExecutable(scriptPath: string): string {
+function findPythonExecutable(scriptPath: string, includeVirtualEnv = true): string {
   const isWindows = process.platform === 'win32';
   const isMac = process.platform === 'darwin';
   const isLinux = !isWindows && !isMac;
@@ -47,23 +47,25 @@ function findPythonExecutable(scriptPath: string): string {
   // Get the project root (parent of the python/ directory)
   const projectRoot = dirname(dirname(scriptPath));
 
-  // Check for virtual environment
-  const venvPaths = [
-    join(projectRoot, 'venv', isWindows ? 'Scripts' : 'bin', isWindows ? 'python.exe' : 'python'),
-    join(projectRoot, '.venv', isWindows ? 'Scripts' : 'bin', isWindows ? 'python.exe' : 'python'),
-  ];
-
-  for (const venvPath of venvPaths) {
-    if (existsSync(venvPath)) {
-      logger.info(`Found virtual environment Python at: ${venvPath}`);
-      return venvPath;
-    }
-  }
-
   // Allow override via KICAD_PYTHON environment variable (any platform)
   if (process.env.KICAD_PYTHON) {
     logger.info(`Using KICAD_PYTHON environment variable: ${process.env.KICAD_PYTHON}`);
     return process.env.KICAD_PYTHON;
+  }
+
+  // Check for virtual environment
+  if (includeVirtualEnv) {
+    const venvPaths = [
+      join(projectRoot, 'venv', isWindows ? 'Scripts' : 'bin', isWindows ? 'python.exe' : 'python'),
+      join(projectRoot, '.venv', isWindows ? 'Scripts' : 'bin', isWindows ? 'python.exe' : 'python'),
+    ];
+
+    for (const venvPath of venvPaths) {
+      if (existsSync(venvPath)) {
+        logger.info(`Found virtual environment Python at: ${venvPath}`);
+        return venvPath;
+      }
+    }
   }
 
   // Platform-specific KiCAD bundled Python detection
@@ -183,11 +185,19 @@ export class KiCADMcpServer {
     }
     
     // Initialize the MCP server
-    this.server = new McpServer({
-      name: 'kicad-mcp-server',
-      version: '1.0.0',
-      description: 'MCP server for KiCAD PCB design operations'
-    });
+    this.server = new McpServer(
+      {
+        name: 'kicad-mcp-server',
+        version: '1.0.0',
+        description: 'MCP server for KiCAD PCB design operations'
+      },
+      {
+        capabilities: {
+          logging: {},
+          elicitation: {}
+        }
+      }
+    );
     
     // Initialize STDIO transport
     this.stdioTransport = new StdioServerTransport();
@@ -232,6 +242,30 @@ export class KiCADMcpServer {
 
     logger.info('All KiCAD tools, resources, and prompts registered');
     logger.info('Router pattern enabled: 4 router tools + direct tools for discovery');
+  }
+
+  private isVirtualEnvPython(pythonExe: string): boolean {
+    return /(^|[\\/])\.?venv([\\/])/.test(pythonExe);
+  }
+
+  private async canImportPcbnew(pythonExe: string): Promise<boolean> {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        exec(`"${pythonExe}" -c "import pcbnew"`, {
+          timeout: 4000,
+          env: { ...process.env }
+        }, (error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
   
   /**
@@ -358,14 +392,18 @@ export class KiCADMcpServer {
       logger.error('='.repeat(70));
       logger.error('STARTUP VALIDATION FAILED');
       logger.error('='.repeat(70));
-      errors.forEach(err => logger.error(err));
+      errors.forEach(err => {
+        logger.error(err);
+      });
       logger.error('='.repeat(70));
 
       // Also write to stderr for Claude Desktop to capture
       process.stderr.write('\n' + '='.repeat(70) + '\n');
       process.stderr.write('KiCAD MCP Server - Startup Validation Failed\n');
       process.stderr.write('='.repeat(70) + '\n');
-      errors.forEach(err => process.stderr.write(err + '\n'));
+      errors.forEach(err => {
+        process.stderr.write(err + '\n');
+      });
       process.stderr.write('='.repeat(70) + '\n\n');
 
       return false;
@@ -383,13 +421,25 @@ export class KiCADMcpServer {
 
       // Start the Python process for KiCAD scripting
       logger.info(`Starting Python process with script: ${this.kicadScriptPath}`);
-      const pythonExe = findPythonExecutable(this.kicadScriptPath);
+      let pythonExe = findPythonExecutable(this.kicadScriptPath);
+      if (!process.env.KICAD_PYTHON && this.isVirtualEnvPython(pythonExe)) {
+        const fallbackPythonExe = findPythonExecutable(this.kicadScriptPath, false);
+        if (fallbackPythonExe !== pythonExe) {
+          const [venvHasPcbnew, fallbackHasPcbnew] = await Promise.all([
+            this.canImportPcbnew(pythonExe),
+            this.canImportPcbnew(fallbackPythonExe),
+          ]);
+
+          if (!venvHasPcbnew && fallbackHasPcbnew) {
+            logger.warn(`Virtual environment Python cannot import pcbnew. Switching to fallback interpreter: ${fallbackPythonExe}`);
+            pythonExe = fallbackPythonExe;
+          }
+        }
+      }
 
       logger.info(`Using Python executable: ${pythonExe}`);
 
-      // Validate prerequisites
-      const isValid = await this.validatePrerequisites(pythonExe);
-      if (!isValid) {
+      if (!await this.validatePrerequisites(pythonExe)) {
         throw new Error('Prerequisites validation failed. See logs above for details.');
       }
       this.pythonProcess = spawn(pythonExe, [this.kicadScriptPath], {
@@ -479,7 +529,16 @@ export class KiCADMcpServer {
       // Determine timeout based on command type
       // DRC and export operations need longer timeouts for large boards
       let commandTimeout = 30000; // Default 30 seconds
-      const longRunningCommands = ['run_drc', 'export_gerber', 'export_pdf', 'export_3d', 'save_project', 'refill_zones', 'delete_all_traces'];
+      const longRunningCommands = [
+        'run_drc',
+        'export_gerber',
+        'export_pdf',
+        'export_3d',
+        'save_project',
+        'refill_zones',
+        'delete_all_traces',
+        'download_jlcpcb_database'
+      ];
       if (longRunningCommands.includes(command)) {
         commandTimeout = 600000; // 10 minutes for long operations
         logger.info(`Using extended timeout (${commandTimeout/1000}s) for command: ${command}`);
@@ -604,7 +663,27 @@ export class KiCADMcpServer {
 
       // Write the request to the Python process
       logger.debug(`Sending request: ${requestStr}`);
-      this.pythonProcess?.stdin?.write(requestStr + '\n');
+      const stdin = this.pythonProcess?.stdin;
+      if (!stdin || stdin.destroyed || !this.pythonProcess) {
+        clearTimeout(timeoutHandle);
+        this.currentRequestHandler = null;
+        this.processingRequest = false;
+        reject(new Error('Python process stdin is not available'));
+        setTimeout(() => this.processNextRequest(), 0);
+        return;
+      }
+
+      stdin.write(requestStr + '\n', (writeError) => {
+        if (!writeError) {
+          return;
+        }
+
+        clearTimeout(timeoutHandle);
+        this.currentRequestHandler = null;
+        this.processingRequest = false;
+        reject(new Error(`Failed to write request to Python process: ${writeError.message}`));
+        setTimeout(() => this.processNextRequest(), 0);
+      });
     } catch (error) {
       logger.error(`Error processing request: ${error}`);
 
