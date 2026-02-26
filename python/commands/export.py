@@ -10,6 +10,8 @@ import base64
 import csv
 import json
 
+from utils.kicad_cli import resolve_kicad_cli
+
 logger = logging.getLogger("kicad_interface")
 
 
@@ -20,6 +22,7 @@ class ExportCommands:
         """Initialize with optional board instance"""
         self.board = board
         self.jlcpcb_parts_manager = jlcpcb_parts_manager
+        self._last_cli_resolution: Dict[str, Any] = {}
 
     def export_gerber(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Export Gerber files"""
@@ -123,7 +126,10 @@ class ExportCommands:
                             f"Could not generate drill files: {str(drill_error)}"
                         )
                 else:
-                    logger.warning("kicad-cli not available for drill file generation")
+                    logger.warning(
+                        "kicad-cli not available for drill file generation; searched: %s",
+                        ", ".join(self._last_cli_resolution.get("searched", [])),
+                    )
 
             return {
                 "success": True,
@@ -378,7 +384,10 @@ class ExportCommands:
                 return {
                     "success": False,
                     "message": "kicad-cli not found",
-                    "errorDetails": "KiCAD CLI tool not found. Install KiCAD 8.0+ or set PATH.",
+                    "errorDetails": {
+                        "message": "KiCAD CLI tool not found. Install KiCAD 8.0+ or set KICAD_CLI_PATH.",
+                        "searched": self._last_cli_resolution.get("searched", []),
+                    },
                 }
 
             # Build command based on format
@@ -834,42 +843,8 @@ class ExportCommands:
         return 1
 
     def _find_kicad_cli(self) -> Optional[str]:
-        """Find kicad-cli executable in system PATH or common locations
-
-        Returns:
-            Path to kicad-cli executable, or None if not found
-        """
-        import shutil
-        import platform
-
-        # Try system PATH first
-        cli_path = shutil.which("kicad-cli")
-        if cli_path:
-            return cli_path
-
-        # Try platform-specific default locations
-        system = platform.system()
-
-        if system == "Windows":
-            possible_paths = [
-                r"C:\Program Files\KiCad\9.0\bin\kicad-cli.exe",
-                r"C:\Program Files\KiCad\8.0\bin\kicad-cli.exe",
-                r"C:\Program Files (x86)\KiCad\9.0\bin\kicad-cli.exe",
-                r"C:\Program Files (x86)\KiCad\8.0\bin\kicad-cli.exe",
-            ]
-        elif system == "Darwin":  # macOS
-            possible_paths = [
-                "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
-                "/usr/local/bin/kicad-cli",
-            ]
-        else:  # Linux
-            possible_paths = [
-                "/usr/bin/kicad-cli",
-                "/usr/local/bin/kicad-cli",
-            ]
-
-        for path in possible_paths:
-            if os.path.exists(path):
-                return path
-
+        resolved = resolve_kicad_cli()
+        self._last_cli_resolution = resolved
+        if resolved.get("found"):
+            return resolved.get("path")
         return None
