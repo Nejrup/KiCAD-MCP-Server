@@ -765,6 +765,7 @@ class JLCPCBPartsManager:
         manufacturer: Optional[str] = None,
         in_stock: bool = True,
         limit: int = 20,
+        basic_first: bool = True,
     ) -> List[Dict]:
         """
         Search for parts with filters
@@ -777,6 +778,7 @@ class JLCPCBPartsManager:
             manufacturer: Filter by manufacturer name
             in_stock: Only return parts with stock > 0
             limit: Maximum number of results
+            basic_first: Prioritize Basic parts first when library_type is not fixed
 
         Returns:
             List of matching parts
@@ -815,6 +817,17 @@ class JLCPCBPartsManager:
 
         if in_stock:
             sql_parts.append("AND stock > 0")
+
+        if basic_first and not library_type:
+            sql_parts.append(
+                "ORDER BY CASE "
+                "WHEN library_type = 'Basic' THEN 0 "
+                "WHEN library_type = 'Preferred' THEN 1 "
+                "ELSE 2 END, "
+                "stock DESC"
+            )
+        else:
+            sql_parts.append("ORDER BY stock DESC")
 
         sql_parts.append("LIMIT ?")
         params.append(limit)

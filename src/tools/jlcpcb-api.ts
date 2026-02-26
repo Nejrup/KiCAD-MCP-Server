@@ -385,7 +385,7 @@ Use this to find components with exact specifications and cost optimization.`,
       package: z.string().optional()
         .describe("Filter by package type (e.g., '0603', 'SOT-23', 'QFN-32')"),
       library_type: z.enum(["Basic", "Extended", "Preferred", "All"]).optional().default("All")
-        .describe("Filter by library type (Basic = free assembly at JLCPCB)"),
+        .describe("Filter by library type. Default All returns Basic-first ordering (Basic = free assembly at JLCPCB)."),
       manufacturer: z.string().optional()
         .describe("Filter by manufacturer name"),
       in_stock: z.boolean().optional().default(true)
@@ -417,7 +417,7 @@ Use this to find components with exact specifications and cost optimization.`,
         return {
           content: [{
             type: "text",
-            text: `Found ${result.count} JLCPCB parts:\n\n${partsList}\n\n` +
+            text: `Found ${result.count} JLCPCB parts${result.basicFirst ? ' (Basic-first order)' : ''}:\n\n${partsList}\n\n` +
                   `💡 Basic parts have free assembly. Extended parts charge $3 setup fee per unique part.`
           }]
         };

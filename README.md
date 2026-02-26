@@ -135,6 +135,7 @@ Complete integration with JLCPCB's parts catalog, providing two complementary ap
 - Real-time pricing with quantity breaks (1+, 10+, 100+, 1000+)
 - Stock availability checking
 - Basic vs Extended library type identification (Basic = free assembly)
+- Basic-first default search ordering when library type is not fixed
 - Intelligent cost optimization with alternative part suggestions
 - Package-to-footprint mapping for KiCAD compatibility
 - Parametric search by category, package, manufacturer

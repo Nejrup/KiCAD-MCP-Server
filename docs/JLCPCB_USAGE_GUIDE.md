@@ -159,7 +159,7 @@ Database path: /home/user/KiCAD-MCP-Server/data/jlcpcb_parts.db
 search_jlcpcb_parts({
   query: "10k resistor",
   package: "0603",
-  library_type: "Basic"  // Only free-assembly parts
+  library_type: "All"  // Default behavior: Basic parts are listed first
 })
 ```
 
@@ -173,6 +173,7 @@ C25744: RC0603FR-0710KP - 10kΩ ±1% 0.1W [Basic] - $0.002/ea (12000 in stock)
 ...
 
 💡 Basic parts have free assembly. Extended parts charge $3 setup fee per unique part.
+💡 Default search ordering is Basic-first when library_type is not fixed.
 ```
 
 #### Get Part Details with Pricing
