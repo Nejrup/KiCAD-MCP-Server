@@ -82,6 +82,7 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
     "add_wire",
     "Add a wire connection in the schematic",
     {
+      schematicPath: z.string().describe("Path to the schematic file"),
       start: z.object({
         x: z.number(),
         y: z.number()
@@ -91,8 +92,13 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
         y: z.number()
       }).describe("End position"),
     },
-    async (args: any) => {
-      const result = await callKicadScript("add_wire", args);
+    async (args: { schematicPath: string; start: { x: number; y: number }; end: { x: number; y: number } }) => {
+      const transformed = {
+        schematicPath: args.schematicPath,
+        startPoint: [args.start.x, args.start.y],
+        endPoint: [args.end.x, args.end.y],
+      };
+      const result = await callKicadScript("add_schematic_wire", transformed);
       return {
         content: [{
           type: "text",
@@ -225,12 +231,98 @@ export function registerSchematicTools(server: McpServer, callKicadScript: Funct
 
   // Generate netlist
   server.tool(
+    "auto_layout_schematic",
+    "Auto-layout schematic symbols to reduce overlaps and improve alignment",
+    {
+      schematicPath: z.string().describe("Path to the schematic file"),
+      grid: z.number().optional().describe("Layout grid in mm (default 2.54)"),
+      xOrigin: z.number().optional().describe("Layout origin X in mm"),
+      yOrigin: z.number().optional().describe("Layout origin Y in mm"),
+      rowSpacing: z.number().optional().describe("Row spacing in mm"),
+      columnSpacing: z.number().optional().describe("Column spacing in mm"),
+      preserveConnectivity: z.boolean().optional().describe("Preserve existing net memberships while laying out"),
+      allowUnsafeLayout: z.boolean().optional().describe("Allow moving symbols without connectivity preservation")
+    },
+    async (args: {
+      schematicPath: string;
+      grid?: number;
+      xOrigin?: number;
+      yOrigin?: number;
+      rowSpacing?: number;
+      columnSpacing?: number;
+      preserveConnectivity?: boolean;
+      allowUnsafeLayout?: boolean;
+    }) => {
+      const result = await callKicadScript("auto_layout_schematic", args);
+      if (result.success) {
+        return {
+          content: [{
+            type: "text",
+            text: `Auto-layout complete. Moved ${result.movedCount ?? 0} components.`
+          }]
+        };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `Auto-layout failed: ${result.message || JSON.stringify(result)}`
+        }]
+      };
+    }
+  );
+
+  server.tool(
+    "validate_schematic",
+    "Validate schematic quality and basic circuit integrity checks",
+    {
+      schematicPath: z.string().describe("Path to the schematic file"),
+      overlapDistanceMM: z.number().optional().describe("Distance threshold for overlap warnings")
+    },
+    async (args: { schematicPath: string; overlapDistanceMM?: number }) => {
+      const result = await callKicadScript("validate_schematic", args);
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    }
+  );
+
+  server.tool(
+    "export_schematic_pdf",
+    "Export schematic file to PDF",
+    {
+      schematicPath: z.string().describe("Path to the schematic file"),
+      outputPath: z.string().describe("Output PDF file path")
+    },
+    async (args: { schematicPath: string; outputPath: string }) => {
+      const result = await callKicadScript("export_schematic_pdf", args);
+      if (result.success) {
+        return {
+          content: [{
+            type: "text",
+            text: `Schematic PDF exported to ${args.outputPath}`
+          }]
+        };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: `Failed to export schematic PDF: ${result.message || JSON.stringify(result)}`
+        }]
+      };
+    }
+  );
+
+  server.tool(
     "generate_netlist",
     "Generate a netlist from the schematic",
     {
-      schematicPath: z.string().describe("Path to the schematic file")
+      schematicPath: z.string().describe("Path to the schematic file"),
+      includeTemplates: z.boolean().optional().describe("Include internal template symbols in output")
     },
-    async (args: { schematicPath: string }) => {
+    async (args: { schematicPath: string; includeTemplates?: boolean }) => {
       const result = await callKicadScript("generate_netlist", args);
       if (result.success && result.netlist) {
         const netlist = result.netlist;

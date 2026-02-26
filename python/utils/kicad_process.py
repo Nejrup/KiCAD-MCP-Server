@@ -3,11 +3,13 @@ KiCAD Process Management Utilities
 
 Detects if KiCAD is running and provides auto-launch functionality.
 """
+
 import os
 import subprocess
 import logging
 import platform
 import time
+import shutil
 import ctypes
 from ctypes import wintypes
 from pathlib import Path
@@ -28,7 +30,11 @@ class KiCADProcessManager:
             try:
                 ulong_ptr = wintypes.ULONG_PTR  # type: ignore[attr-defined]
             except AttributeError:
-                ulong_ptr = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+                ulong_ptr = (
+                    ctypes.c_ulonglong
+                    if ctypes.sizeof(ctypes.c_void_p) == 8
+                    else ctypes.c_ulong
+                )
 
             class PROCESSENTRY32W(ctypes.Structure):
                 _fields_ = [
@@ -58,11 +64,13 @@ class KiCADProcessManager:
 
             if Process32FirstW(snapshot, ctypes.byref(entry)):
                 while True:
-                    processes.append({
-                        "pid": str(entry.th32ProcessID),
-                        "name": entry.szExeFile,
-                        "command": entry.szExeFile
-                    })
+                    processes.append(
+                        {
+                            "pid": str(entry.th32ProcessID),
+                            "name": entry.szExeFile,
+                            "command": entry.szExeFile,
+                        }
+                    )
                     if not Process32NextW(snapshot, ctypes.byref(entry)):
                         break
 
@@ -87,27 +95,23 @@ class KiCADProcessManager:
                 # Check for actual pcbnew/kicad binaries (not python scripts)
                 # Use exact process name matching to avoid matching our own kicad_interface.py
                 result = subprocess.run(
-                    ["pgrep", "-x", "pcbnew|kicad"],
-                    capture_output=True,
-                    text=True
+                    ["pgrep", "-x", "pcbnew|kicad"], capture_output=True, text=True
                 )
                 if result.returncode == 0:
                     return True
                 # Also check with -f for full path matching, but exclude our script
                 result = subprocess.run(
-                    ["pgrep", "-f", "/pcbnew|/kicad"],
-                    capture_output=True,
-                    text=True
+                    ["pgrep", "-f", "/pcbnew|/kicad"], capture_output=True, text=True
                 )
                 # Double-check it's not our own process
                 if result.returncode == 0:
-                    pids = result.stdout.strip().split('\n')
+                    pids = result.stdout.strip().split("\n")
                     for pid in pids:
                         try:
                             cmdline = subprocess.run(
                                 ["ps", "-p", pid, "-o", "command="],
                                 capture_output=True,
-                                text=True
+                                text=True,
                             )
                             if "kicad_interface.py" not in cmdline.stdout:
                                 return True
@@ -117,9 +121,7 @@ class KiCADProcessManager:
 
             elif system == "Darwin":  # macOS
                 result = subprocess.run(
-                    ["pgrep", "-f", "KiCad|pcbnew"],
-                    capture_output=True,
-                    text=True
+                    ["pgrep", "-f", "KiCad|pcbnew"], capture_output=True, text=True
                 )
                 return result.returncode == 0
 
@@ -157,7 +159,7 @@ class KiCADProcessManager:
                 text=True,
                 encoding="mbcs" if system == "Windows" else None,
                 errors="ignore" if system == "Windows" else None,
-                timeout=5 if system == "Windows" else None
+                timeout=5 if system == "Windows" else None,
             )
             if result.returncode == 0:
                 path = result.stdout.strip().split("\n")[0]
@@ -194,7 +196,9 @@ class KiCADProcessManager:
         return None
 
     @staticmethod
-    def launch(project_path: Optional[Path] = None, wait_for_start: bool = True) -> bool:
+    def launch(
+        project_path: Optional[Path] = None, wait_for_start: bool = True
+    ) -> bool:
         """
         Launch KiCAD PCB Editor
 
@@ -209,6 +213,8 @@ class KiCADProcessManager:
             # Check if already running
             if KiCADProcessManager.is_running():
                 logger.info("KiCAD is already running")
+                if project_path:
+                    KiCADProcessManager.open_in_running_instance(project_path)
                 return True
 
             # Find executable
@@ -230,9 +236,9 @@ class KiCADProcessManager:
                 # Windows: Use CREATE_NEW_PROCESS_GROUP to detach
                 subprocess.Popen(
                     cmd,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stderr=subprocess.DEVNULL,
                 )
             else:
                 # Unix: Use nohup or start in background
@@ -240,7 +246,7 @@ class KiCADProcessManager:
                     cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    start_new_session=True
+                    start_new_session=True,
                 )
 
             # Wait for process to start
@@ -263,6 +269,168 @@ class KiCADProcessManager:
             return False
 
     @staticmethod
+    def open_in_running_instance(project_path: Path) -> bool:
+        try:
+            if not project_path.exists():
+                logger.warning(f"Cannot open file in KiCAD: not found: {project_path}")
+                return False
+
+            system = platform.system()
+            if system == "Darwin":
+                subprocess.run(
+                    ["open", "-a", "KiCad", str(project_path)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                subprocess.run(
+                    ["osascript", "-e", 'tell application "KiCad" to activate'],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return True
+
+            exe_path = KiCADProcessManager.get_executable_path()
+            if not exe_path:
+                return False
+
+            subprocess.Popen(
+                [str(exe_path), str(project_path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error opening file in running KiCAD: {e}")
+            return False
+
+    @staticmethod
+    def open_schematic_editor(schematic_path: Optional[Path] = None) -> bool:
+        try:
+            system = platform.system()
+            if system == "Darwin":
+                eeschema_app = Path(
+                    "/Applications/KiCad/KiCad.app/Contents/Applications/eeschema.app"
+                )
+                if eeschema_app.exists():
+                    cmd = ["open", "-a", str(eeschema_app)]
+                    if schematic_path and schematic_path.exists():
+                        cmd.append(str(schematic_path))
+                    subprocess.run(
+                        cmd,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return True
+
+            if system == "Linux":
+                candidates = []
+                which_eeschema = shutil.which("eeschema")
+                if which_eeschema:
+                    candidates.append(which_eeschema)
+                candidates.extend(
+                    [
+                        "/usr/bin/eeschema",
+                        "/usr/local/bin/eeschema",
+                        "/snap/bin/kicad.eeschema",
+                    ]
+                )
+
+                for candidate in candidates:
+                    exe = Path(candidate)
+                    if not exe.exists():
+                        continue
+                    cmd = [str(exe)]
+                    if schematic_path and schematic_path.exists():
+                        cmd.append(str(schematic_path))
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    return True
+
+            if system == "Windows":
+                candidates = []
+                which_eeschema = shutil.which("eeschema.exe")
+                if which_eeschema:
+                    candidates.append(which_eeschema)
+                candidates.extend(
+                    [
+                        r"C:\Program Files\KiCad\9.0\bin\eeschema.exe",
+                        r"C:\Program Files (x86)\KiCad\9.0\bin\eeschema.exe",
+                    ]
+                )
+
+                for candidate in candidates:
+                    exe = Path(candidate)
+                    if not exe.exists():
+                        continue
+                    cmd = [str(exe)]
+                    if schematic_path and schematic_path.exists():
+                        cmd.append(str(schematic_path))
+                    subprocess.Popen(
+                        cmd,
+                        creationflags=getattr(
+                            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                        ),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    return True
+
+            if os.environ.get("KICAD_ALLOW_UI_AUTOMATION", "0") != "1":
+                return False
+
+            if system != "Darwin":
+                return False
+
+            script = r"""
+            tell application "KiCad" to activate
+            delay 0.8
+            tell application "System Events"
+                if not (exists process "KiCad") then
+                    return "no_process"
+                end if
+                tell process "KiCad"
+                    set frontmost to true
+                    try
+                        click menu item "Schematic Editor" of menu "Tools" of menu bar 1
+                        return "tools_menu"
+                    on error
+                        try
+                            click menu item "Schematic Editor" of menu "File" of menu bar 1
+                            return "file_menu"
+                        on error
+                            try
+                                keystroke "e" using {command down}
+                                return "cmd_e"
+                            on error
+                                return "failed"
+                            end try
+                        end try
+                    end try
+                end tell
+            end tell
+            """
+
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            output = (result.stdout or "").strip().lower()
+            return output in {"tools_menu", "file_menu", "cmd_e"}
+        except Exception as e:
+            logger.error(f"Error opening Schematic Editor: {e}")
+            return False
+
+    @staticmethod
     def get_process_info() -> List[dict]:
         """
         Get information about running KiCAD processes
@@ -275,23 +443,25 @@ class KiCADProcessManager:
 
         try:
             if system in ["Linux", "Darwin"]:
-                result = subprocess.run(
-                    ["ps", "aux"],
-                    capture_output=True,
-                    text=True
-                )
+                result = subprocess.run(["ps", "aux"], capture_output=True, text=True)
                 for line in result.stdout.split("\n"):
                     # Only match actual KiCAD binaries, not our MCP server processes
-                    if ("pcbnew" in line.lower() or "kicad" in line.lower()) and "kicad_interface.py" not in line and "grep" not in line:
+                    if (
+                        ("pcbnew" in line.lower() or "kicad" in line.lower())
+                        and "kicad_interface.py" not in line
+                        and "grep" not in line
+                    ):
                         # More specific check: must have /pcbnew or /kicad in the path
                         if "/pcbnew" in line or "/kicad" in line or "KiCad.app" in line:
                             parts = line.split()
                             if len(parts) >= 11:
-                                processes.append({
-                                    "pid": parts[1],
-                                    "name": parts[10],
-                                    "command": " ".join(parts[10:])
-                                })
+                                processes.append(
+                                    {
+                                        "pid": parts[1],
+                                        "name": parts[10],
+                                        "command": " ".join(parts[10:]),
+                                    }
+                                )
 
             elif system == "Windows":
                 for proc in KiCADProcessManager._windows_list_processes():
@@ -304,7 +474,10 @@ class KiCADProcessManager:
 
         return processes
 
-def check_and_launch_kicad(project_path: Optional[Path] = None, auto_launch: bool = True) -> dict:
+
+def check_and_launch_kicad(
+    project_path: Optional[Path] = None, auto_launch: bool = True
+) -> dict:
     """
     Check if KiCAD is running and optionally launch it
 
@@ -321,11 +494,16 @@ def check_and_launch_kicad(project_path: Optional[Path] = None, auto_launch: boo
 
     if is_running:
         processes = manager.get_process_info()
+        opened_project = False
+        if project_path:
+            opened_project = manager.open_in_running_instance(project_path)
         return {
             "running": True,
             "launched": False,
             "processes": processes,
-            "message": "KiCAD is already running"
+            "message": "KiCAD is already running",
+            "project": str(project_path) if project_path else None,
+            "openedProject": opened_project,
         }
 
     if not auto_launch:
@@ -333,7 +511,7 @@ def check_and_launch_kicad(project_path: Optional[Path] = None, auto_launch: boo
             "running": False,
             "launched": False,
             "processes": [],
-            "message": "KiCAD is not running (auto-launch disabled)"
+            "message": "KiCAD is not running (auto-launch disabled)",
         }
 
     # Try to launch
@@ -344,6 +522,8 @@ def check_and_launch_kicad(project_path: Optional[Path] = None, auto_launch: boo
         "running": success,
         "launched": success,
         "processes": manager.get_process_info() if success else [],
-        "message": "KiCAD launched successfully" if success else "Failed to launch KiCAD",
-        "project": str(project_path) if project_path else None
+        "message": "KiCAD launched successfully"
+        if success
+        else "Failed to launch KiCAD",
+        "project": str(project_path) if project_path else None,
     }
