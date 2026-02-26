@@ -1,6 +1,7 @@
 from skip import Schematic
 import os
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -10,16 +11,19 @@ logger = logging.getLogger(__name__)
 try:
     from commands.wire_manager import WireManager
     from commands.pin_locator import PinLocator
+
     WIRE_MANAGER_AVAILABLE = True
 except ImportError:
     logger.warning("WireManager/PinLocator not available")
     WIRE_MANAGER_AVAILABLE = False
+
 
 class ConnectionManager:
     """Manage connections between components in schematics"""
 
     # Initialize pin locator (class variable, shared across instances)
     _pin_locator = None
+    _last_error = ""
 
     @classmethod
     def get_pin_locator(cls):
@@ -28,8 +32,94 @@ class ConnectionManager:
             cls._pin_locator = PinLocator()
         return cls._pin_locator
 
+    @classmethod
+    def _set_error(cls, message: str):
+        cls._last_error = message
+        logger.error(message)
+
+    @classmethod
+    def get_last_error(cls) -> str:
+        return cls._last_error
+
     @staticmethod
-    def add_wire(schematic_path: Path, start_point: list, end_point: list, properties: dict = None):
+    def _points_close(p1, p2, tolerance: float = 0.5) -> bool:
+        if not p1 or not p2:
+            return False
+        return (
+            math.hypot(float(p1[0]) - float(p2[0]), float(p1[1]) - float(p2[1]))
+            < tolerance
+        )
+
+    @staticmethod
+    def _pin_already_connected_to_net(
+        schematic_path: Path,
+        pin_loc,
+        stub_end,
+        net_name: str,
+    ) -> bool:
+        try:
+            schematic = Schematic(str(schematic_path))
+            label_points = []
+            if hasattr(schematic, "label"):
+                for label in schematic.label:
+                    if getattr(label, "value", None) != net_name:
+                        continue
+                    if hasattr(label, "at") and hasattr(label.at, "value"):
+                        at = label.at.value
+                        label_points.append([float(at[0]), float(at[1])])
+
+            if not label_points:
+                return False
+
+            relevant_label_points = []
+            for point in label_points:
+                if ConnectionManager._points_close(
+                    point, stub_end
+                ) or ConnectionManager._points_close(point, pin_loc):
+                    relevant_label_points.append(point)
+
+            if not relevant_label_points:
+                return False
+
+            if not hasattr(schematic, "wire"):
+                return False
+
+            for wire in schematic.wire:
+                if not (hasattr(wire, "pts") and hasattr(wire.pts, "xy")):
+                    continue
+                wire_points = []
+                for point in wire.pts.xy:
+                    if hasattr(point, "value"):
+                        wire_points.append(
+                            [float(point.value[0]), float(point.value[1])]
+                        )
+
+                touches_pin = any(
+                    ConnectionManager._points_close(point, pin_loc)
+                    for point in wire_points
+                )
+                if not touches_pin:
+                    continue
+
+                for label_point in relevant_label_points:
+                    touches_label = any(
+                        ConnectionManager._points_close(point, label_point)
+                        for point in wire_points
+                    )
+                    if touches_label:
+                        return True
+
+            return False
+        except Exception:
+            return False
+
+    @staticmethod
+    def add_wire(
+        schematic_path: Path,
+        start_point: list,
+        end_point: list,
+        properties: Optional[dict] = None,
+    ):
         """
         Add a wire between two points using WireManager
 
@@ -47,11 +137,17 @@ class ConnectionManager:
                 logger.error("WireManager not available")
                 return False
 
-            stroke_width = properties.get('stroke_width', 0) if properties else 0
-            stroke_type = properties.get('stroke_type', 'default') if properties else 'default'
+            props = properties or {}
+            stroke_width = props.get("stroke_width", 0)
+            stroke_type = props.get("stroke_type", "default")
 
-            success = WireManager.add_wire(schematic_path, start_point, end_point,
-                                          stroke_width=stroke_width, stroke_type=stroke_type)
+            success = WireManager.add_wire(
+                schematic_path,
+                start_point,
+                end_point,
+                stroke_width=stroke_width,
+                stroke_type=stroke_type,
+            )
             return success
         except Exception as e:
             logger.error(f"Error adding wire: {e}")
@@ -70,7 +166,7 @@ class ConnectionManager:
             [x, y] coordinates or None if pin not found
         """
         try:
-            if not hasattr(symbol, 'pin'):
+            if not hasattr(symbol, "pin"):
                 logger.warning(f"Symbol {symbol.property.Reference.value} has no pins")
                 return None
 
@@ -82,7 +178,9 @@ class ConnectionManager:
                     break
 
             if not target_pin:
-                logger.warning(f"Pin '{pin_name}' not found on {symbol.property.Reference.value}")
+                logger.warning(
+                    f"Pin '{pin_name}' not found on {symbol.property.Reference.value}"
+                )
                 return None
 
             # Get pin location relative to symbol
@@ -101,8 +199,14 @@ class ConnectionManager:
             return None
 
     @staticmethod
-    def add_connection(schematic_path: Path, source_ref: str, source_pin: str,
-                      target_ref: str, target_pin: str, routing: str = 'direct'):
+    def add_connection(
+        schematic_path: Path,
+        source_ref: str,
+        source_pin: str,
+        target_ref: str,
+        target_pin: str,
+        routing: str = "direct",
+    ):
         """
         Add a wire connection between two component pins
 
@@ -118,48 +222,69 @@ class ConnectionManager:
             True if connection was successful, False otherwise
         """
         try:
+            ConnectionManager._last_error = ""
             if not WIRE_MANAGER_AVAILABLE:
-                logger.error("WireManager/PinLocator not available")
+                ConnectionManager._set_error("WireManager/PinLocator not available")
                 return False
 
             locator = ConnectionManager.get_pin_locator()
             if not locator:
-                logger.error("Pin locator unavailable")
+                ConnectionManager._set_error("Pin locator unavailable")
                 return False
 
             # Get pin locations
-            source_loc = locator.get_pin_location(schematic_path, source_ref, source_pin)
-            target_loc = locator.get_pin_location(schematic_path, target_ref, target_pin)
+            source_loc = locator.get_pin_location(
+                schematic_path, source_ref, source_pin
+            )
+            source_lookup_error = getattr(locator, "last_error", "")
+            target_loc = locator.get_pin_location(
+                schematic_path, target_ref, target_pin
+            )
+            target_lookup_error = getattr(locator, "last_error", "")
 
             if not source_loc or not target_loc:
-                logger.error("Could not determine pin locations")
+                ConnectionManager._set_error(
+                    "Could not determine pin locations. "
+                    f"source={source_ref}/{source_pin}: {source_lookup_error or 'not found'}, "
+                    f"target={target_ref}/{target_pin}: {target_lookup_error or 'not found'}"
+                )
                 return False
 
             # Create wire based on routing style
-            if routing == 'direct':
+            if routing == "direct":
                 # Simple direct wire
                 success = WireManager.add_wire(schematic_path, source_loc, target_loc)
-            elif routing == 'orthogonal_h':
+            elif routing == "orthogonal_h":
                 # Orthogonal routing (horizontal first)
-                path = WireManager.create_orthogonal_path(source_loc, target_loc, prefer_horizontal_first=True)
+                path = WireManager.create_orthogonal_path(
+                    source_loc, target_loc, prefer_horizontal_first=True
+                )
                 success = WireManager.add_polyline_wire(schematic_path, path)
-            elif routing == 'orthogonal_v':
+            elif routing == "orthogonal_v":
                 # Orthogonal routing (vertical first)
-                path = WireManager.create_orthogonal_path(source_loc, target_loc, prefer_horizontal_first=False)
+                path = WireManager.create_orthogonal_path(
+                    source_loc, target_loc, prefer_horizontal_first=False
+                )
                 success = WireManager.add_polyline_wire(schematic_path, path)
             else:
-                logger.error(f"Unknown routing style: {routing}")
+                ConnectionManager._set_error(f"Unknown routing style: {routing}")
                 return False
 
             if success:
-                logger.info(f"Connected {source_ref}/{source_pin} to {target_ref}/{target_pin} (routing: {routing})")
+                logger.info(
+                    f"Connected {source_ref}/{source_pin} to {target_ref}/{target_pin} (routing: {routing})"
+                )
                 return True
             else:
+                ConnectionManager._set_error(
+                    f"Failed to create wire geometry from {source_ref}/{source_pin} to {target_ref}/{target_pin}"
+                )
                 return False
 
         except Exception as e:
-            logger.error(f"Error adding connection: {e}")
+            ConnectionManager._set_error(f"Error adding connection: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return False
 
@@ -177,13 +302,12 @@ class ConnectionManager:
             Label object or None on error
         """
         try:
-            if not hasattr(schematic, 'label'):
+            if not hasattr(schematic, "label"):
                 logger.error("Schematic does not have label collection")
                 return None
 
             label = schematic.label.append(
-                text=net_name,
-                at={'x': position[0], 'y': position[1]}
+                text=net_name, at={"x": position[0], "y": position[1]}
             )
             logger.info(f"Added net label '{net_name}' at {position}")
             return label
@@ -192,7 +316,9 @@ class ConnectionManager:
             return None
 
     @staticmethod
-    def connect_to_net(schematic_path: Path, component_ref: str, pin_name: str, net_name: str):
+    def connect_to_net(
+        schematic_path: Path, component_ref: str, pin_name: str, net_name: str
+    ):
         """
         Connect a component pin to a named net using a wire stub and label
 
@@ -206,47 +332,83 @@ class ConnectionManager:
             True if successful, False otherwise
         """
         try:
+            ConnectionManager._last_error = ""
             if not WIRE_MANAGER_AVAILABLE:
-                logger.error("WireManager/PinLocator not available")
+                ConnectionManager._set_error("WireManager/PinLocator not available")
                 return False
 
             locator = ConnectionManager.get_pin_locator()
             if not locator:
-                logger.error("Pin locator unavailable")
+                ConnectionManager._set_error("Pin locator unavailable")
                 return False
 
-            # Get pin location using PinLocator
-            pin_loc = locator.get_pin_location(schematic_path, component_ref, pin_name)
-            if not pin_loc:
-                logger.error(f"Could not locate pin {component_ref}/{pin_name}")
+            # Get pin info using PinLocator
+            pin_info = locator.get_pin_info(schematic_path, component_ref, pin_name)
+            if not pin_info:
+                ConnectionManager._set_error(
+                    f"Could not locate pin {component_ref}/{pin_name}. "
+                    f"Details: {getattr(locator, 'last_error', '')}"
+                )
                 return False
+
+            pin_loc = [pin_info["x"], pin_info["y"]]
+
+            # Create wire stub in direction of pin orientation
+            angle = pin_info.get("effective_angle", 0.0) % 360.0
+            nearest = int(round(angle / 90.0) * 90) % 360
+            stub_length = 2.54
+            direction_map = {
+                0: (stub_length, 0.0),
+                90: (0.0, stub_length),
+                180: (-stub_length, 0.0),
+                270: (0.0, -stub_length),
+            }
+            dx, dy = direction_map.get(nearest, (stub_length, 0.0))
 
             # Add a small wire stub from the pin (2.54mm = 0.1 inch, standard grid spacing)
-            stub_end = [pin_loc[0] + 2.54, pin_loc[1]]
+            stub_end = [pin_loc[0] + dx, pin_loc[1] + dy]
+
+            if ConnectionManager._pin_already_connected_to_net(
+                schematic_path,
+                pin_loc,
+                stub_end,
+                net_name,
+            ):
+                logger.info(
+                    f"Net connection already exists for {component_ref}/{pin_name} -> {net_name}"
+                )
+                return True
 
             # Create wire stub using WireManager
             wire_success = WireManager.add_wire(schematic_path, pin_loc, stub_end)
             if not wire_success:
-                logger.error(f"Failed to create wire stub for net connection")
+                ConnectionManager._set_error(
+                    "Failed to create wire stub for net connection"
+                )
                 return False
 
             # Add label at the end of the stub using WireManager
-            label_success = WireManager.add_label(schematic_path, net_name, stub_end, label_type='label')
+            label_success = WireManager.add_label(
+                schematic_path, net_name, stub_end, label_type="label"
+            )
             if not label_success:
-                logger.error(f"Failed to add net label '{net_name}'")
+                ConnectionManager._set_error(f"Failed to add net label '{net_name}'")
                 return False
 
             logger.info(f"Connected {component_ref}/{pin_name} to net '{net_name}'")
             return True
 
         except Exception as e:
-            logger.error(f"Error connecting to net: {e}")
+            ConnectionManager._set_error(f"Error connecting to net: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return False
 
     @staticmethod
-    def get_net_connections(schematic: Schematic, net_name: str, schematic_path: Optional[Path] = None):
+    def get_net_connections(
+        schematic: Schematic, net_name: str, schematic_path: Optional[Path] = None
+    ):
         """
         Get all connections for a named net using wire graph analysis
 
@@ -273,14 +435,14 @@ class ConnectionManager:
                 return dx < tolerance and dy < tolerance
 
             # 1. Find all labels with this net name
-            if not hasattr(schematic, 'label'):
+            if not hasattr(schematic, "label"):
                 logger.warning("Schematic has no labels")
                 return connections
 
             net_label_positions = []
             for label in schematic.label:
-                if hasattr(label, 'value') and label.value == net_name:
-                    if hasattr(label, 'at') and hasattr(label.at, 'value'):
+                if hasattr(label, "value") and label.value == net_name:
+                    if hasattr(label, "at") and hasattr(label.at, "value"):
                         pos = label.at.value
                         net_label_positions.append([float(pos[0]), float(pos[1])])
 
@@ -288,21 +450,25 @@ class ConnectionManager:
                 logger.info(f"No labels found for net '{net_name}'")
                 return connections
 
-            logger.debug(f"Found {len(net_label_positions)} labels for net '{net_name}'")
+            logger.debug(
+                f"Found {len(net_label_positions)} labels for net '{net_name}'"
+            )
 
             # 2. Find all wires connected to these label positions
-            if not hasattr(schematic, 'wire'):
+            if not hasattr(schematic, "wire"):
                 logger.warning("Schematic has no wires")
                 return connections
 
             connected_wire_points = set()
             for wire in schematic.wire:
-                if hasattr(wire, 'pts') and hasattr(wire.pts, 'xy'):
+                if hasattr(wire, "pts") and hasattr(wire.pts, "xy"):
                     # Get all points in this wire (polyline)
                     wire_points = []
                     for point in wire.pts.xy:
-                        if hasattr(point, 'value'):
-                            wire_points.append([float(point.value[0]), float(point.value[1])])
+                        if hasattr(point, "value"):
+                            wire_points.append(
+                                [float(point.value[0]), float(point.value[1])]
+                            )
 
                     # Check if any wire point touches a label
                     wire_connected = False
@@ -323,10 +489,12 @@ class ConnectionManager:
                 logger.debug(f"No wires connected to net '{net_name}' labels")
                 return connections
 
-            logger.debug(f"Found {len(connected_wire_points)} wire connection points for net '{net_name}'")
+            logger.debug(
+                f"Found {len(connected_wire_points)} wire connection points for net '{net_name}'"
+            )
 
             # 3. Find component pins at wire endpoints
-            if not hasattr(schematic, 'symbol'):
+            if not hasattr(schematic, "symbol"):
                 logger.warning("Schematic has no symbols")
                 return connections
 
@@ -337,15 +505,15 @@ class ConnectionManager:
 
             for symbol in schematic.symbol:
                 # Skip template symbols
-                if not hasattr(symbol.property, 'Reference'):
+                if not hasattr(symbol.property, "Reference"):
                     continue
 
                 ref = symbol.property.Reference.value
-                if ref.startswith('_TEMPLATE'):
+                if ref.startswith("_TEMPLATE"):
                     continue
 
                 # Get lib_id for pin location lookup
-                lib_id = symbol.lib_id.value if hasattr(symbol, 'lib_id') else None
+                lib_id = symbol.lib_id.value if hasattr(symbol, "lib_id") else None
                 if not lib_id:
                     continue
 
@@ -360,17 +528,18 @@ class ConnectionManager:
                         # Check each pin
                         for pin_num, pin_data in pins.items():
                             # Get pin location
-                            pin_loc = locator.get_pin_location(schematic_path, ref, pin_num)
+                            pin_loc = locator.get_pin_location(
+                                schematic_path, ref, pin_num
+                            )
                             if not pin_loc:
                                 continue
 
                             # Check if pin coincides with any wire point
                             for wire_pt in connected_wire_points:
                                 if points_coincide(pin_loc, list(wire_pt)):
-                                    connections.append({
-                                        "component": ref,
-                                        "pin": pin_num
-                                    })
+                                    connections.append(
+                                        {"component": ref, "pin": pin_num}
+                                    )
                                     break  # Pin found, no need to check more wire points
 
                     except Exception as e:
@@ -380,7 +549,7 @@ class ConnectionManager:
 
                 # Fallback: proximity-based matching if no PinLocator
                 if not locator or not schematic_path:
-                    symbol_pos = symbol.at.value if hasattr(symbol, 'at') else None
+                    symbol_pos = symbol.at.value if hasattr(symbol, "at") else None
                     if not symbol_pos:
                         continue
 
@@ -389,12 +558,11 @@ class ConnectionManager:
 
                     # Check if symbol is near any wire point (within 10mm)
                     for wire_pt in connected_wire_points:
-                        dist = ((symbol_x - wire_pt[0])**2 + (symbol_y - wire_pt[1])**2)**0.5
+                        dist = (
+                            (symbol_x - wire_pt[0]) ** 2 + (symbol_y - wire_pt[1]) ** 2
+                        ) ** 0.5
                         if dist < 10.0:  # 10mm proximity threshold
-                            connections.append({
-                                "component": ref,
-                                "pin": "unknown"
-                            })
+                            connections.append({"component": ref, "pin": "unknown"})
                             break  # Only add once per component
 
             logger.info(f"Found {len(connections)} connections for net '{net_name}'")
@@ -403,11 +571,16 @@ class ConnectionManager:
         except Exception as e:
             logger.error(f"Error getting net connections: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             return []
 
     @staticmethod
-    def generate_netlist(schematic: Schematic):
+    def generate_netlist(
+        schematic: Schematic,
+        schematic_path: Optional[Path] = None,
+        include_templates: bool = False,
+    ):
         """
         Generate a netlist from the schematic
 
@@ -431,47 +604,59 @@ class ConnectionManager:
             }
         """
         try:
-            netlist = {
-                "nets": [],
-                "components": []
-            }
+            netlist = {"nets": [], "components": []}
 
             # Gather all components
-            if hasattr(schematic, 'symbol'):
+            if hasattr(schematic, "symbol"):
                 for symbol in schematic.symbol:
+                    reference = symbol.property.Reference.value
+                    if (not include_templates) and str(reference).startswith(
+                        "_TEMPLATE"
+                    ):
+                        continue
                     component_info = {
-                        "reference": symbol.property.Reference.value,
-                        "value": symbol.property.Value.value if hasattr(symbol.property, 'Value') else "",
-                        "footprint": symbol.property.Footprint.value if hasattr(symbol.property, 'Footprint') else ""
+                        "reference": reference,
+                        "value": symbol.property.Value.value
+                        if hasattr(symbol.property, "Value")
+                        else "",
+                        "footprint": symbol.property.Footprint.value
+                        if hasattr(symbol.property, "Footprint")
+                        else "",
                     }
                     netlist["components"].append(component_info)
 
             # Gather all nets from labels
-            if hasattr(schematic, 'label'):
+            if hasattr(schematic, "label"):
                 net_names = set()
                 for label in schematic.label:
-                    if hasattr(label, 'value'):
+                    if hasattr(label, "value"):
                         net_names.add(label.value)
 
                 # For each net, get connections
                 for net_name in net_names:
-                    connections = ConnectionManager.get_net_connections(schematic, net_name)
+                    connections = ConnectionManager.get_net_connections(
+                        schematic, net_name, schematic_path=schematic_path
+                    )
                     if connections:
-                        netlist["nets"].append({
-                            "name": net_name,
-                            "connections": connections
-                        })
+                        netlist["nets"].append(
+                            {"name": net_name, "connections": connections}
+                        )
 
-            logger.info(f"Generated netlist with {len(netlist['nets'])} nets and {len(netlist['components'])} components")
+            logger.info(
+                f"Generated netlist with {len(netlist['nets'])} nets and {len(netlist['components'])} components"
+            )
             return netlist
 
         except Exception as e:
             logger.error(f"Error generating netlist: {e}")
             return {"nets": [], "components": []}
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     # Example Usage (for testing)
-    from schematic import SchematicManager # Assuming schematic.py is in the same directory
+    from schematic import (
+        SchematicManager,
+    )  # Assuming schematic.py is in the same directory
 
     # Create a new schematic
     test_sch = SchematicManager.create_schematic("ConnectionTestSchematic")
