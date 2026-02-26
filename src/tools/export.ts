@@ -175,6 +175,28 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
     }
   );
 
+  server.tool(
+    "analyze_bom_jlcpcb",
+    {
+      bomPath: z.string().describe("Path to BOM file (CSV or JSON)"),
+      lcscField: z.string().optional().describe("Optional BOM column name containing LCSC part numbers")
+    },
+    async ({ bomPath, lcscField }) => {
+      logger.debug(`Analyzing BOM with JLCPCB data: ${bomPath}`);
+      const result = await callKicadScript("analyze_bom_jlcpcb", {
+        bomPath,
+        lcscField
+      });
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result)
+        }]
+      };
+    }
+  );
+
   // ------------------------------------------------------
   // Export Netlist Tool
   // ------------------------------------------------------
