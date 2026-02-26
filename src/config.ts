@@ -6,6 +6,7 @@ import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import os from 'os';
 import { z } from 'zod';
 import { logger } from './logger.js';
 
@@ -15,6 +16,7 @@ const __dirname = dirname(__filename);
 
 // Default config location
 const DEFAULT_CONFIG_PATH = join(dirname(__dirname), 'config', 'default-config.json');
+const USER_CONFIG_PATH = join(os.homedir(), '.kicad-mcp', 'config.json');
 
 /**
  * Server configuration schema
@@ -26,7 +28,12 @@ const ConfigSchema = z.object({
   pythonPath: z.string().optional(),
   kicadPath: z.string().optional(),
   logLevel: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
-  logDir: z.string().optional()
+  logDir: z.string().optional(),
+  jlcpcb: z.object({
+    appId: z.string().optional(),
+    apiKey: z.string().optional(),
+    apiSecret: z.string().optional(),
+  }).optional(),
 });
 
 /**
@@ -43,7 +50,8 @@ export type Config = z.infer<typeof ConfigSchema>;
 export async function loadConfig(configPath?: string): Promise<Config> {
   try {
     // Determine which config file to load
-    const filePath = configPath || DEFAULT_CONFIG_PATH;
+    const filePath = configPath
+      || (existsSync(USER_CONFIG_PATH) ? USER_CONFIG_PATH : DEFAULT_CONFIG_PATH);
     
     // Check if file exists
     if (!existsSync(filePath)) {

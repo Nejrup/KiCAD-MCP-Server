@@ -18,6 +18,7 @@ const DEFAULT_LOG_DIR = join(os.homedir(), '.kicad-mcp', 'logs');
 class Logger {
   private logLevel: LogLevel = 'info';
   private logDir: string = DEFAULT_LOG_DIR;
+  private stderrAvailable = true;
   
   /**
    * Set the log level
@@ -89,7 +90,13 @@ class Logger {
 
     // Log to console.error (stderr) only - stdout is reserved for MCP protocol
     // All log levels go to stderr to avoid corrupting STDIO MCP transport
-    console.error(formattedMessage);
+    if (this.stderrAvailable) {
+      try {
+        console.error(formattedMessage);
+      } catch (error) {
+        this.stderrAvailable = false;
+      }
+    }
     
     // Log to file
     try {
@@ -101,7 +108,13 @@ class Logger {
       const logFile = join(this.logDir, `kicad-mcp-${new Date().toISOString().split('T')[0]}.log`);
       appendFileSync(logFile, formattedMessage + '\n');
     } catch (error) {
-      console.error(`Failed to write to log file: ${error}`);
+      if (this.stderrAvailable) {
+        try {
+          console.error(`Failed to write to log file: ${error}`);
+        } catch {
+          this.stderrAvailable = false;
+        }
+      }
     }
   }
 }
