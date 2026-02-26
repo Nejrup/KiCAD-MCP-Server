@@ -1,12 +1,11 @@
 # JLCPCB Integration Guide
 
-The KiCAD MCP Server provides **three complementary approaches** for working with JLCPCB parts:
+The KiCAD MCP Server provides **two complementary approaches** for working with JLCPCB parts:
 
-1. **JLCSearch Public API** - No authentication required, 2.5M+ parts with pricing (Recommended)
-2. **Local Symbol Libraries** - Search JLCPCB libraries installed via KiCad PCM _(contributed by [@l3wi](https://github.com/l3wi) in [PR #25](https://github.com/mixelpixx/KiCAD-MCP-Server/pull/25))_
-3. **Official JLCPCB API** - Requires enterprise account (Advanced)
+1. **Local Symbol Libraries** - Search JLCPCB libraries installed via KiCad PCM _(contributed by [@l3wi](https://github.com/l3wi) in [PR #25](https://github.com/mixelpixx/KiCAD-MCP-Server/pull/25))_
+2. **JLCPCB API Integration** - Access the complete ~7,000,000 parts catalog snapshot with real-time pricing
 
-All approaches can be used together to give you maximum flexibility.
+Both approaches can be used together to give you maximum flexibility.
 
 ## Credits
 
@@ -15,46 +14,7 @@ All approaches can be used together to give you maximum flexibility.
 
 ---
 
-## Approach 1: JLCSearch Public API (Recommended)
-
-### What It Does
-- Access to 2.5M+ JLCPCB parts with pricing and stock data
-- **No authentication required** - works immediately
-- **No JLCPCB account needed**
-- Real-time pricing with quantity breaks
-- Basic vs Extended library type identification
-- Local SQLite database for fast offline searching
-- Note: Download takes 40-60 minutes due to API pagination (100 parts per request)
-
-### Setup
-
-No setup required! Just download the database:
-
-```
-download_jlcpcb_database({ force: false })
-```
-
-This downloads ~2.5M parts from JLCSearch API and creates a local SQLite database (`data/jlcpcb_parts.db`).
-
-**Expected Output:**
-```
-Downloading JLCPCB parts database...
-Downloaded 100 parts...
-Downloaded 200 parts...
-... (continues for 40-60 minutes)
-Downloaded 2,500,000 parts...
-
-Total parts: 2,500,000+
-Database size: ~1-2 GB
-```
-
-### Usage Examples
-
-See "Approach 2" usage examples below - the API is the same.
-
----
-
-## Approach 2: Local Symbol Libraries (Good for Offline Use)
+## Approach 1: Local Symbol Libraries (Recommended for Getting Started)
 
 ### What It Does
 - Searches symbol libraries you've installed via KiCad's Plugin and Content Manager (PCM)
@@ -134,10 +94,10 @@ Class: Extended
 
 ---
 
-## Approach 3: Official JLCPCB API (Advanced - Enterprise Accounts Only)
+## Approach 2: JLCPCB API Integration (For Complete Catalog Access)
 
 ### What It Does
-- Downloads from the **official JLCPCB API** (requires enterprise account)
+- Downloads the **complete JLCPCB parts catalog snapshot** (~7,000,000 parts)
 - Provides **real-time pricing and stock information**
 - Automatic **Basic vs Extended** library type identification (Basic = free assembly)
 - Smart suggestions for cheaper/in-stock alternatives
@@ -174,19 +134,24 @@ JLCPCB_API_SECRET=your_app_secret_here
 **One-time setup** (takes 5-10 minutes):
 
 ```
-download_jlcpcb_database({ force: false })
+download_jlcpcb_database({ source: "auto", force: false })
 ```
 
-This downloads ~100k parts from JLCPCB and creates a local SQLite database (`data/jlcpcb_parts.db`).
+The server now supports two download sources:
+- `official`: signed full-catalog download via JLC credentials
+- `public`: high-coverage snapshot hosted by yaqwsx/jlcparts (with archive reuse and incremental update support)
+
+When `source: "auto"`, the tool shows estimates and lets you choose a source. The resulting SQLite database is stored at `data/jlcpcb_parts.db`.
 
 **Output:**
 ```
 ✓ Successfully downloaded JLCPCB parts database
 
-Total parts: 108,523
-Basic parts: 2,856 (free assembly)
-Extended parts: 105,667 ($3 setup fee each)
-Database size: 42.3 MB
+Total parts: ~7,000,000
+Basic parts: ~350 (free assembly)
+Extended parts: ~6,999,650
+In stock: ~650,000
+Database size: ~1,700 MB
 Database path: /home/user/KiCAD-MCP-Server/data/jlcpcb_parts.db
 ```
 
@@ -198,7 +163,7 @@ Database path: /home/user/KiCAD-MCP-Server/data/jlcpcb_parts.db
 search_jlcpcb_parts({
   query: "10k resistor",
   package: "0603",
-  library_type: "Basic"  // Only free-assembly parts
+  library_type: "All"  // Default behavior: Basic parts are listed first
 })
 ```
 
@@ -212,6 +177,7 @@ C25744: RC0603FR-0710KP - 10kΩ ±1% 0.1W [Basic] - $0.002/ea (12000 in stock)
 ...
 
 💡 Basic parts have free assembly. Extended parts charge $3 setup fee per unique part.
+💡 Default search ordering is Basic-first when library_type is not fixed.
 ```
 
 #### Get Part Details with Pricing
@@ -298,7 +264,7 @@ Database path: /home/user/KiCAD-MCP-Server/data/jlcpcb_parts.db
 ```
 
 ### Advantages
-- ✅ Complete JLCPCB catalog (100k+ parts)
+- ✅ Complete JLCPCB catalog snapshot (~7,000,000 parts)
 - ✅ Real-time pricing and stock data
 - ✅ Automatic Basic/Extended identification
 - ✅ Cost optimization suggestions
@@ -401,17 +367,29 @@ For each part in your design:
 
 The JLCPCB parts database should be updated periodically to get latest parts and pricing.
 
-### Manual Update
+### Manual Full Refresh
 
 ```
-download_jlcpcb_database({ force: true })
+download_jlcpcb_database({ source: "official", force: true })
 ```
 
-This re-downloads the entire catalog and replaces the existing database.
+or
 
-### Automatic Updates (Future)
+```
+download_jlcpcb_database({ source: "public", force: true, confirm: true })
+```
 
-Future versions will support incremental updates that only fetch new/changed parts.
+### Incremental Public Snapshot Update
+
+For the public snapshot source, the importer supports archive reuse and changed-archive updates to avoid full re-download when possible.
+
+Use status polling to monitor progress:
+
+```
+get_jlcpcb_download_status({})
+```
+
+Status reports include changed/reused archive counts, estimated/actual download size, import progress, and elapsed time.
 
 ---
 
@@ -452,7 +430,7 @@ download_jlcpcb_database({ force: false })
 
 | Feature | Local Libraries | JLCPCB API |
 |---------|----------------|------------|
-| **Parts Count** | 1k-10k (installed) | 100k+ (complete catalog) |
+| **Parts Count** | 1k-10k (installed) | ~7,000,000 (complete snapshot) |
 | **Setup** | Install via PCM | API credentials + download |
 | **Offline Use** | ✅ Yes | ✅ Yes (after download) |
 | **Pricing** | ❌ No | ✅ Real-time |
