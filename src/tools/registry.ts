@@ -91,11 +91,14 @@ export const toolCategories: ToolCategory[] = [
       "create_schematic",
       "add_schematic_component",
       "add_wire",
+      "auto_layout_schematic",
+      "validate_schematic",
       "add_schematic_connection",
       "add_schematic_net_label",
       "connect_to_net",
       "get_net_connections",
-      "generate_netlist"
+      "generate_netlist",
+      "export_schematic_pdf"
     ]
   },
   {

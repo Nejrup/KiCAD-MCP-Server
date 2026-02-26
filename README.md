@@ -273,6 +273,12 @@ The server provides 64 tools organized into functional categories. With the new 
    - **Netlist generation** - accurate component/pin connection tracking
    - **S-expression precision** - guaranteed KiCad format compliance
 
+**Coordinate System Note (Critical for schematic connectivity):**
+- Symbol library coordinates use normal math orientation (`+Y` up)
+- Placed schematic coordinates use screen orientation (`+Y` down)
+- Pin mapping from symbol to schematic must invert `Y` before rotation/translation
+- Connectivity is coordinate-exact on grid points; off-grid coordinates can silently break net detection
+
 ### UI Management (2 tools)
 - `check_kicad_ui` - Check if KiCAD is running
 - `launch_kicad_ui` - Launch KiCAD application

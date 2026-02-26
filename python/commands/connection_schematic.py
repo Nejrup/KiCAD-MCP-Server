@@ -1,6 +1,7 @@
 from skip import Schematic
 import os
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +40,78 @@ class ConnectionManager:
     @classmethod
     def get_last_error(cls) -> str:
         return cls._last_error
+
+    @staticmethod
+    def _points_close(p1, p2, tolerance: float = 0.5) -> bool:
+        if not p1 or not p2:
+            return False
+        return (
+            math.hypot(float(p1[0]) - float(p2[0]), float(p1[1]) - float(p2[1]))
+            < tolerance
+        )
+
+    @staticmethod
+    def _pin_already_connected_to_net(
+        schematic_path: Path,
+        pin_loc,
+        stub_end,
+        net_name: str,
+    ) -> bool:
+        try:
+            schematic = Schematic(str(schematic_path))
+            label_points = []
+            if hasattr(schematic, "label"):
+                for label in schematic.label:
+                    if getattr(label, "value", None) != net_name:
+                        continue
+                    if hasattr(label, "at") and hasattr(label.at, "value"):
+                        at = label.at.value
+                        label_points.append([float(at[0]), float(at[1])])
+
+            if not label_points:
+                return False
+
+            relevant_label_points = []
+            for point in label_points:
+                if ConnectionManager._points_close(
+                    point, stub_end
+                ) or ConnectionManager._points_close(point, pin_loc):
+                    relevant_label_points.append(point)
+
+            if not relevant_label_points:
+                return False
+
+            if not hasattr(schematic, "wire"):
+                return False
+
+            for wire in schematic.wire:
+                if not (hasattr(wire, "pts") and hasattr(wire.pts, "xy")):
+                    continue
+                wire_points = []
+                for point in wire.pts.xy:
+                    if hasattr(point, "value"):
+                        wire_points.append(
+                            [float(point.value[0]), float(point.value[1])]
+                        )
+
+                touches_pin = any(
+                    ConnectionManager._points_close(point, pin_loc)
+                    for point in wire_points
+                )
+                if not touches_pin:
+                    continue
+
+                for label_point in relevant_label_points:
+                    touches_label = any(
+                        ConnectionManager._points_close(point, label_point)
+                        for point in wire_points
+                    )
+                    if touches_label:
+                        return True
+
+            return False
+        except Exception:
+            return False
 
     @staticmethod
     def add_wire(
@@ -295,6 +368,17 @@ class ConnectionManager:
             # Add a small wire stub from the pin (2.54mm = 0.1 inch, standard grid spacing)
             stub_end = [pin_loc[0] + dx, pin_loc[1] + dy]
 
+            if ConnectionManager._pin_already_connected_to_net(
+                schematic_path,
+                pin_loc,
+                stub_end,
+                net_name,
+            ):
+                logger.info(
+                    f"Net connection already exists for {component_ref}/{pin_name} -> {net_name}"
+                )
+                return True
+
             # Create wire stub using WireManager
             wire_success = WireManager.add_wire(schematic_path, pin_loc, stub_end)
             if not wire_success:
@@ -492,7 +576,11 @@ class ConnectionManager:
             return []
 
     @staticmethod
-    def generate_netlist(schematic: Schematic):
+    def generate_netlist(
+        schematic: Schematic,
+        schematic_path: Optional[Path] = None,
+        include_templates: bool = False,
+    ):
         """
         Generate a netlist from the schematic
 
@@ -521,8 +609,13 @@ class ConnectionManager:
             # Gather all components
             if hasattr(schematic, "symbol"):
                 for symbol in schematic.symbol:
+                    reference = symbol.property.Reference.value
+                    if (not include_templates) and str(reference).startswith(
+                        "_TEMPLATE"
+                    ):
+                        continue
                     component_info = {
-                        "reference": symbol.property.Reference.value,
+                        "reference": reference,
                         "value": symbol.property.Value.value
                         if hasattr(symbol.property, "Value")
                         else "",
@@ -542,7 +635,7 @@ class ConnectionManager:
                 # For each net, get connections
                 for net_name in net_names:
                     connections = ConnectionManager.get_net_connections(
-                        schematic, net_name
+                        schematic, net_name, schematic_path=schematic_path
                     )
                     if connections:
                         netlist["nets"].append(

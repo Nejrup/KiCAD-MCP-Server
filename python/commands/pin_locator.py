@@ -8,7 +8,7 @@ Uses S-expression parsing to extract pin data from symbol definitions.
 import logging
 import math
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import Any, List, Tuple, Optional, Dict
 import sexpdata
 from sexpdata import Symbol
 from skip import Schematic
@@ -227,7 +227,7 @@ class PinLocator:
 
     def get_pin_info(
         self, schematic_path: Path, symbol_reference: str, pin_number: str
-    ) -> Optional[Dict[str, float]]:
+    ) -> Optional[Dict[str, Any]]:
         """
         Get the absolute location of a pin on a symbol instance
 
@@ -302,7 +302,7 @@ class PinLocator:
 
             # Get pin position relative to symbol origin
             pin_rel_x = pin_data["x"]
-            pin_rel_y = pin_data["y"]
+            pin_rel_y = -pin_data["y"]
 
             logger.debug(f"Pin {pin_key} relative position: ({pin_rel_x}, {pin_rel_y})")
 
@@ -319,9 +319,8 @@ class PinLocator:
             abs_x = symbol_x + pin_rel_x
             abs_y = symbol_y + pin_rel_y
 
-            effective_angle = (
-                float(pin_data.get("angle", 0.0)) + symbol_rotation
-            ) % 360.0
+            pin_angle = (-float(pin_data.get("angle", 0.0))) % 360.0
+            effective_angle = (pin_angle + symbol_rotation) % 360.0
 
             logger.info(f"Pin {resolved_ref}/{pin_key} located at ({abs_x}, {abs_y})")
             return {
@@ -330,7 +329,7 @@ class PinLocator:
                 "symbol_reference": resolved_ref,
                 "pin_key": pin_key,
                 "pin_name": str(pin_data.get("name", "")),
-                "pin_angle": float(pin_data.get("angle", 0.0)),
+                "pin_angle": pin_angle,
                 "symbol_rotation": symbol_rotation,
                 "effective_angle": effective_angle,
             }
