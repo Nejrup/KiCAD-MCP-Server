@@ -16,6 +16,7 @@ import time
 import threading
 import shutil
 from typing import Dict, Any, Optional
+from pathlib import Path
 
 # Import tool schemas and resource definitions
 from schemas.tool_schemas import TOOL_SCHEMAS
@@ -88,6 +89,7 @@ if utils_dir not in sys.path:
 # Import platform helper and add KiCAD paths
 from utils.platform_helper import PlatformHelper
 from utils.kicad_process import check_and_launch_kicad, KiCADProcessManager
+from utils.kicad_cli import resolve_kicad_cli
 
 logger.info(f"Detecting KiCAD Python paths for {PlatformHelper.get_platform_name()}...")
 paths_added = PlatformHelper.add_kicad_to_python_path()
@@ -218,6 +220,7 @@ try:
     from commands.schematic import SchematicManager
     from commands.component_schematic import ComponentManager
     from commands.connection_schematic import ConnectionManager
+    from commands.schematic_quality import SchematicQualityManager
     from commands.library_schematic import LibraryManager as SchematicLibraryManager
     from commands.library import (
         LibraryManager as FootprintLibraryManager,
@@ -392,9 +395,12 @@ class KiCADInterface:
             "generate_netlist": self._handle_generate_netlist,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
+            "auto_layout_schematic": self._handle_auto_layout_schematic,
+            "validate_schematic": self._handle_validate_schematic,
             # UI/Process management commands
             "check_kicad_ui": self._handle_check_kicad_ui,
             "launch_kicad_ui": self._handle_launch_kicad_ui,
+            "open_schematic_editor": self._handle_open_schematic_editor,
             # IPC-specific commands (real-time operations)
             "get_backend_info": self._handle_get_backend_info,
             "ipc_add_track": self._handle_ipc_add_track,
@@ -683,7 +689,7 @@ class KiCADInterface:
         try:
             search_paths = params.get("searchPaths")
 
-            libraries = LibraryManager.list_available_libraries(search_paths)
+            libraries = SchematicLibraryManager.list_available_libraries(search_paths)
             return {"success": True, "libraries": libraries}
         except Exception as e:
             logger.error(f"Error listing schematic libraries: {str(e)}")
@@ -703,26 +709,90 @@ class KiCADInterface:
 
             import subprocess
 
+            resolved_cli = resolve_kicad_cli()
+            if not resolved_cli.get("found"):
+                searched_paths = resolved_cli.get("searched", [])
+                return {
+                    "success": False,
+                    "message": "kicad-cli not found",
+                    "errorDetails": "Searched paths: " + ", ".join(searched_paths),
+                }
+
+            cmd = [
+                resolved_cli["path"],
+                "sch",
+                "export",
+                "pdf",
+                "--output",
+                output_path,
+                schematic_path,
+            ]
+
             result = subprocess.run(
-                [
-                    "kicad-cli",
-                    "sch",
-                    "export",
-                    "pdf",
-                    "--output",
-                    output_path,
-                    schematic_path,
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
+                timeout=60,
             )
 
             success = result.returncode == 0
-            message = result.stderr if not success else ""
+            if success:
+                return {
+                    "success": True,
+                    "message": "",
+                    "cliPath": resolved_cli["path"],
+                }
 
-            return {"success": success, "message": message}
+            stderr = (result.stderr or "").strip()
+            stdout = (result.stdout or "").strip()
+            return {
+                "success": False,
+                "message": stderr or stdout or "kicad-cli failed",
+                "errorDetails": {
+                    "cliPath": resolved_cli["path"],
+                    "searched": resolved_cli.get("searched", []),
+                },
+            }
         except Exception as e:
             logger.error(f"Error exporting schematic to PDF: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_auto_layout_schematic(self, params):
+        logger.info("Auto-layout schematic")
+        try:
+            schematic_path = params.get("schematicPath")
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+
+            result = SchematicQualityManager.auto_layout(
+                Path(schematic_path),
+                grid=float(params.get("grid", 2.54)),
+                x_origin=float(params.get("xOrigin", 20.0)),
+                y_origin=float(params.get("yOrigin", 20.0)),
+                row_spacing=float(params.get("rowSpacing", 15.24)),
+                column_spacing=float(params.get("columnSpacing", 45.72)),
+                preserve_connectivity=bool(params.get("preserveConnectivity", True)),
+                allow_unsafe=bool(params.get("allowUnsafeLayout", False)),
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error auto-layout schematic: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_validate_schematic(self, params):
+        logger.info("Validate schematic")
+        try:
+            schematic_path = params.get("schematicPath")
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+
+            result = SchematicQualityManager.validate(
+                Path(schematic_path),
+                overlap_distance_mm=float(params.get("overlapDistanceMM", 5.08)),
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error validating schematic: {str(e)}")
             return {"success": False, "message": str(e)}
 
     def _handle_add_schematic_connection(self, params):
@@ -906,7 +976,11 @@ class KiCADInterface:
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
 
-            netlist = ConnectionManager.generate_netlist(schematic)
+            netlist = ConnectionManager.generate_netlist(
+                schematic,
+                schematic_path=Path(schematic_path),
+                include_templates=bool(params.get("includeTemplates", False)),
+            )
             return {"success": True, "netlist": netlist}
         except Exception as e:
             logger.error(f"Error generating netlist: {str(e)}")
@@ -947,6 +1021,72 @@ class KiCADInterface:
             return {"success": True, **result}
         except Exception as e:
             logger.error(f"Error launching KiCAD UI: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_open_schematic_editor(self, params):
+        logger.info("Opening Schematic Editor")
+        try:
+            auto_launch = params.get("autoLaunch", AUTO_LAUNCH_KICAD)
+            schematic_path = params.get("schematicPath")
+            project_path = params.get("projectPath")
+
+            from pathlib import Path
+
+            target_path: Optional[Path] = None
+            if schematic_path:
+                target_path = Path(schematic_path)
+            elif project_path:
+                path = Path(project_path)
+                suffix = path.suffix.lower()
+                if suffix == ".kicad_sch":
+                    target_path = path
+                elif suffix in [".kicad_pro", ".kicad_pcb"]:
+                    target_path = path.with_suffix(".kicad_sch")
+                else:
+                    target_path = path
+
+            if not target_path:
+                return {
+                    "success": False,
+                    "message": "Provide schematicPath or projectPath",
+                }
+
+            if not target_path.exists():
+                return {
+                    "success": False,
+                    "message": f"Schematic file not found: {target_path}",
+                }
+
+            project_file = target_path
+            if target_path.suffix.lower() != ".kicad_pro":
+                project_file = target_path.with_suffix(".kicad_pro")
+
+            if not project_file.exists():
+                return {
+                    "success": False,
+                    "message": f"Project file not found: {project_file}",
+                    "schematicPath": str(target_path),
+                }
+
+            result = check_and_launch_kicad(project_file, auto_launch)
+            opened_project = bool(
+                result.get("openedProject", result.get("running", False))
+            )
+            opened_editor = KiCADProcessManager.open_schematic_editor(target_path)
+
+            return {
+                "success": opened_project and opened_editor,
+                "message": "Opened project and triggered Schematic Editor"
+                if (opened_project and opened_editor)
+                else "Opened project. Schematic Editor was not auto-triggered.",
+                "schematicPath": str(target_path),
+                "projectPath": str(project_file),
+                "openedSchematicEditor": opened_editor,
+                "manualAction": "Open Schematic Editor from KiCad UI",
+                **result,
+            }
+        except Exception as e:
+            logger.error(f"Error opening Schematic Editor: {str(e)}")
             return {"success": False, "message": str(e)}
 
     def _handle_refill_zones(self, params):
