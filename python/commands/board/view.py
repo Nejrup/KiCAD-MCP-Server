@@ -22,7 +22,12 @@ class BoardViewCommands:
     def get_board_info(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Get information about the current board"""
         try:
+            logger.info(f"BoardViewCommands.get_board_info() - self.board is None: {self.board is None}, type: {type(self.board)}")
             if not self.board:
+                logger.error(
+                    f"Board check failed. self.board={self.board}, "
+                    f"bool(self.board)={bool(self.board) if self.board is not None else 'N/A (None)'}"
+                )
                 return {
                     "success": False,
                     "message": "No board is loaded",
